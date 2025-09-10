@@ -1,0 +1,29 @@
+name: Task
+description: Track a concrete piece of work
+labels: [task]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What needs to be done?
+    validations:
+      required: true
+  - type: dropdown
+    id: workstream
+    attributes:
+      label: Workstream
+      options:
+        - orchestrator
+        - agents_llm
+        - tools
+        - api_and_config_store
+        - observability
+        - frontend_ui
+        - devops_github
+        - security
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: What signals completion?

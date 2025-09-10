@@ -1,0 +1,31 @@
+name: Feature Request
+description: Suggest an idea or enhancement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the solution you’d like
+    validations:
+      required: true
+  - type: dropdown
+    id: workstream
+    attributes:
+      label: Workstream
+      options:
+        - orchestrator
+        - agents_llm
+        - tools
+        - api_and_config_store
+        - observability
+        - frontend_ui
+        - devops_github
+        - security

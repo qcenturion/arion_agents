@@ -1,0 +1,32 @@
+name: Bug Report
+description: Report a bug to help us improve
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Be as specific as possible
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+      placeholder: e.g., main@abcdef or v0.1.0
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Traces
+      description: Include relevant logs or trace IDs if available
