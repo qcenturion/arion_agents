@@ -24,7 +24,7 @@ format:
 	$(RUFF) format src tests
 
 run-api:
-	$(PYTHON) -m arion_agents api
+	PYTHONPATH=src $(PYTHON) -m arion_agents api
 
 clean:
 	rm -rf $(VENV) .pytest_cache .ruff_cache
