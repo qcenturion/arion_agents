@@ -17,5 +17,6 @@ Workstreams:
 - security.md — secret management, least privilege, auditing
 
 Tracking approach:
-- For now: task lists in these docs for clarity.
-- Option: mirror as GitHub Issues with labels per workstream and a GitHub Project board once the repo is on GitHub.
+- Primary: GitHub Issues per task, labeled by workstream, and a GitHub Project (board) to manage states (Todo, In Progress, In Review, Done).
+- Secondary: keep high-level checklists in these docs; link issues with `#<number>`.
+- Pull Requests must reference the issue(s) they close and include acceptance criteria.

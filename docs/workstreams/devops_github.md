@@ -11,9 +11,10 @@
 
 ## Milestones & Tasks
 - M1: Repo + CI
-  - [ ] `git init`, first commit, GitHub remote
-  - [ ] GitHub Actions: Python 3.12, `pip install -r requirements.txt`, `pytest`
-  - [ ] Pre-commit hooks (ruff/black optional)
+  - [x] `git init`, first commit, GitHub remote (#initial)
+  - [x] GitHub Actions: Python 3.12, `pip install -r requirements.txt`, `pytest`
+  - [ ] CI: add ruff lint job (#issue)
+  - [ ] Pre-commit hooks (ruff/black optional) (#issue)
 - M2: Containerization
   - [ ] Dockerfile for API service
   - [ ] Compose with OTel stack

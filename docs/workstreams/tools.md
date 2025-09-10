@@ -11,15 +11,15 @@
 
 ## Milestones & Tasks
 - M1: Registry + sample tools
-  - [ ] Tool base class + type hints
-  - [ ] Example: TemplateRetrievalTool
-  - [ ] Example: TransactionValidationTool (mock impl)
+  - [ ] Tool base class + type hints (#issue)
+  - [ ] Example: TemplateRetrievalTool (#issue)
+  - [ ] Example: TransactionValidationTool (mock impl) (#issue)
 - M2: Permissions & policy
-  - [ ] Enforce allowed tools per agent
-  - [ ] Parameter policies (agent_provided vs system_provided)
+  - [ ] Enforce allowed tools per agent (#issue)
+  - [ ] Parameter policies (agent_provided vs system_provided) (#issue)
 - M3: Production readiness
-  - [ ] Timeouts, retries, circuit breakers as needed
-  - [ ] Tracing + input/output redaction options
+  - [ ] Timeouts, retries, circuit breakers as needed (#issue)
+  - [ ] Tracing + input/output redaction options (#issue)
 
 ## Acceptance Criteria
 - Tools cannot be invoked if not permitted

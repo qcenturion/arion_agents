@@ -12,16 +12,16 @@
 
 ## Milestones & Tasks
 - M1: Local tracing
-  - [ ] Add OTel SDK + FastAPI/requests instrumentation
-  - [ ] OTLP exporter to local Collector
-  - [ ] Jaeger UI shows traces with events
+  - [ ] Add OTel SDK + FastAPI/requests instrumentation (#issue)
+  - [ ] OTLP exporter to local Collector (#issue)
+  - [ ] Jaeger UI shows traces with events (#issue)
 - M2: Metrics + dashboards
-  - [ ] Prometheus scrape via Collector
-  - [ ] Grafana with OTel + Prometheus data sources
-  - [ ] Dashboards for latency, errors, token usage
+  - [ ] Prometheus scrape via Collector (#issue)
+  - [ ] Grafana with OTel + Prometheus data sources (#issue)
+  - [ ] Dashboards for latency, errors, token usage (#issue)
 - M3: Logs + sampling
-  - [ ] Structured logging with trace correlation
-  - [ ] Tail-based sampling in Collector (optional)
+  - [ ] Structured logging with trace correlation (#issue)
+  - [ ] Tail-based sampling in Collector (optional) (#issue)
 
 ## Configuration
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`

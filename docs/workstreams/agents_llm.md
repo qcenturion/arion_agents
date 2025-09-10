@@ -13,17 +13,17 @@
 
 ## Milestones & Tasks
 - M1: Single provider + schema
-  - [ ] Choose provider and models
-  - [ ] Implement prompt template for POC agents
-  - [ ] Enforce structured output (raise on invalid)
-  - [ ] Retries/backoff, timeouts
+  - [ ] Choose provider and models (default OpenAI gpt-4o-mini) (#issue)
+  - [ ] Implement prompt template for POC agents (#issue)
+  - [ ] Enforce structured output (raise on invalid) (#issue)
+  - [ ] Retries/backoff, timeouts (#issue)
 - M2: Multi-provider abstraction
-  - [ ] Provider client interface
-  - [ ] OpenAI + one alternative adapter
-  - [ ] Telemetry on tokens/cost/latency
+  - [ ] Provider client interface (#issue)
+  - [ ] OpenAI + one alternative adapter (#issue)
+  - [ ] Telemetry on tokens/cost/latency (#issue)
 - M3: Context/memory hooks
-  - [ ] State summarization function for long contexts
-  - [ ] RAG integration (see configuration)
+  - [ ] State summarization function for long contexts (#issue)
+  - [ ] RAG integration (see configuration) (#issue)
 
 ## Acceptance Criteria
 - Invalid LLM outputs are rejected and retried

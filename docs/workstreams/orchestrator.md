@@ -13,18 +13,18 @@
 
 ## Milestones & Tasks
 - M1: Minimal loop
-  - [ ] Define Instruction pydantic model with strict validation
-  - [ ] Orchestrator loop (parse -> validate -> execute -> trace)
-  - [ ] In-memory session state with history
-  - [ ] Basic span events for instruction and results
+  - [ ] Define Instruction pydantic model with strict validation (#issue)
+  - [ ] Orchestrator loop (parse -> validate -> execute -> trace) (#issue)
+  - [ ] In-memory session state with history (#issue)
+  - [ ] Basic span events for instruction and results (#issue)
 - M2: Permissions & config
-  - [ ] Enforce equipped_tools and allowed_routes
-  - [ ] Config loader (SQLite-backed, see api_and_config_store)
-  - [ ] System-provided parameter injection (e.g., customer_id)
+  - [ ] Enforce equipped_tools and allowed_routes (#issue)
+  - [ ] Config loader (SQLAlchemy, see api_and_config_store) (#issue)
+  - [ ] System-provided parameter injection (e.g., customer_id) (#issue)
 - M3: Robustness & observability
-  - [ ] Error handling, retries for tool calls
-  - [ ] Structured logs and trace attributes
-  - [ ] Trace IDs surfaced in responses
+  - [ ] Error handling, retries for tool calls (#issue)
+  - [ ] Structured logs and trace attributes (#issue)
+  - [ ] Trace IDs surfaced in responses (#issue)
 
 ## Acceptance Criteria
 - RESPOND action terminates loop, returns payload
