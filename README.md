@@ -9,6 +9,11 @@ A Python project scaffold for building LLM-powered agents. This repo uses a mode
 - Run unit tests (SQLite): `pytest`
 - Run API: `make run-api`
 
+## Open Next
+
+- Start here for context and next steps: `docs/START_HERE.md`
+- Local development guide (DB, migrations, API): `docs/LOCAL_DEV.md`
+
 ## Local Postgres (recommended)
 
 Use Docker for local DB to mirror production behavior.
