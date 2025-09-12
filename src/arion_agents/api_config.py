@@ -160,7 +160,7 @@ def create_tool(payload: GlobalToolCreate, db: Session = Depends(get_db_dep)):
         provider_type=payload.provider_type,
         params_schema=payload.params_schema or {},
         secret_ref=payload.secret_ref,
-        metadata=payload.metadata or {},
+        meta=payload.metadata or {},
     )
     db.add(t)
     db.flush()
@@ -215,7 +215,7 @@ def add_tools_to_network(network_id: int, payload: SetTools, db: Session = Depen
             provider_type=g.provider_type,
             params_schema=g.params_schema,
             secret_ref=g.secret_ref,
-            metadata=g.metadata,
+            meta=g.meta,
         )
         db.add(nt)
         created_keys.append(g.key)
@@ -238,7 +238,7 @@ def list_network_tools(network_id: int, db: Session = Depends(get_db_dep)):
             provider_type=nt.provider_type,
             params_schema=nt.params_schema,
             secret_ref=nt.secret_ref,
-            metadata=nt.metadata,
+            metadata=nt.meta,
         )
         for nt in items
     ]
@@ -270,7 +270,7 @@ def create_agent(network_id: int, payload: AgentCreate, db: Session = Depends(ge
         display_name=payload.display_name,
         description=payload.description,
         allow_respond=payload.allow_respond,
-        metadata=payload.metadata or {},
+        meta=payload.metadata or {},
     )
     db.add(a)
     db.flush()
@@ -360,7 +360,7 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
                 "allow_respond": a.allow_respond,
                 "equipped_tools": [t.key for t in a.equipped_tools],
                 "allowed_routes": [r.key for r in a.allowed_routes],
-                "metadata": a.metadata or {},
+                "metadata": a.meta or {},
             }
         )
 
@@ -372,7 +372,8 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
                 "description": t.description,
                 "provider_type": t.provider_type,
                 "params_schema": t.params_schema,
-                "metadata": t.metadata or {},
+                "secret_ref": t.secret_ref,
+                "metadata": t.meta or {},
             }
         )
 
@@ -413,4 +414,3 @@ def compile_and_publish(network_id: int, payload: PublishRequest, db: Session = 
     db.add(net)
     db.flush()
     return {"version": vnum, "version_id": ver.id, "snapshot_id": snap.id}
-

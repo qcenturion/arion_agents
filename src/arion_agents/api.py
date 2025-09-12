@@ -157,9 +157,24 @@ def _build_run_config(network: str, agent_key: str, version: int | None, allow_r
         equipped = list(a.get("equipped_tools", []))
         routes = list(a.get("allowed_routes", []))
         allow = bool(a.get("allow_respond", False)) and allow_respond
+        # Build tools_map for current agent
+        tools_map = {}
+        for tk in equipped:
+            item = tools.get(str(tk).strip().lower())
+            if not item:
+                # tool not present in snapshot; skip
+                continue
+            tools_map[item["key"]] = {
+                "key": item["key"],
+                "provider_type": item.get("provider_type") or "",
+                "params_schema": item.get("params_schema") or {},
+                "secret_ref": item.get("secret_ref"),
+                "metadata": item.get("metadata") or {},
+            }
         return RunConfig(
             current_agent=a["key"],
             equipped_tools=equipped,
+            tools_map=tools_map,
             allowed_routes=routes,
             allow_respond=allow,
             system_params=system_params or {},

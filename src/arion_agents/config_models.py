@@ -39,7 +39,7 @@ class Tool(Base):
     provider_type: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
     params_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     secret_ref: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    metadata: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
     __table_args__ = (
         sa.Index("ux_cfg_tools_key_lower", text("lower(key)"), unique=True),
@@ -59,7 +59,7 @@ class NetworkTool(Base):
     provider_type: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
     params_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     secret_ref: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    metadata: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
     network: Mapped[Network] = relationship("Network", back_populates="network_tools")
     source_tool: Mapped[Tool] = relationship("Tool")
@@ -83,7 +83,7 @@ class Agent(Base):
     display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     allow_respond: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
-    metadata: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
     network: Mapped[Network] = relationship("Network", back_populates="agents")
     equipped_tools: Mapped[List[NetworkTool]] = relationship(
