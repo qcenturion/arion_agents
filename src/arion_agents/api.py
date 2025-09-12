@@ -79,3 +79,12 @@ async def invoke(payload: InvokeRequest) -> dict:
     instr = Instruction.model_validate(payload.instruction)
     result = execute_instruction(instr)
     return {"trace_id": None, "result": result.model_dump()}
+
+# Config router
+try:
+    from .api_config import router as config_router  # type: ignore
+
+    app.include_router(config_router, prefix="/config", tags=["config"])
+except Exception:
+    # Keep API importable even if config store is misconfigured
+    pass
