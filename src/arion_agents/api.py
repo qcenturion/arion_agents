@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 # OpenTelemetry is optional at import time. We lazy-import and no-op if missing.
 _OTEL_AVAILABLE = True
@@ -57,13 +58,24 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+class InvokeRequest(BaseModel):
+    instruction: dict
+
+
 @app.post("/invoke")
-async def invoke(payload: dict) -> dict:
+async def invoke(payload: InvokeRequest) -> dict:
+    # Lazy import here to keep api.py light
+    from arion_agents.orchestrator import Instruction, execute_instruction
+
     if _OTEL_AVAILABLE and os.getenv("OTEL_ENABLED", "true").lower() in {"1", "true", "yes"}:
         tracer = trace.get_tracer("arion_agents.orchestrator")
         with tracer.start_as_current_span("invoke") as span:
-            span.set_attribute("request.payload_size", len(str(payload)))
+            span.set_attribute("request.payload_size", len(str(payload.model_dump())))
             trace_id = _format_trace_id(span.get_span_context().trace_id)
-            return {"trace_id": trace_id, "status": "not_implemented"}
+            instr = Instruction.model_validate(payload.instruction)
+            result = execute_instruction(instr)
+            return {"trace_id": trace_id, "result": result.model_dump()}
     # Fallback when OTel is not available/disabled
-    return {"trace_id": None, "status": "not_implemented"}
+    instr = Instruction.model_validate(payload.instruction)
+    result = execute_instruction(instr)
+    return {"trace_id": None, "result": result.model_dump()}
