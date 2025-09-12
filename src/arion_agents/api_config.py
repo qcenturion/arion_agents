@@ -86,6 +86,7 @@ class AgentCreate(BaseModel):
     description: Optional[str] = None
     allow_respond: bool = True
     metadata: dict = {}
+    prompt_template: Optional[str] = None
 
     @field_validator("key")
     @classmethod
@@ -264,13 +265,17 @@ def create_agent(network_id: int, payload: AgentCreate, db: Session = Depends(ge
         select(Agent).where((Agent.network_id == network_id) & (func.lower(Agent.key) == payload.key))
     ):
         raise HTTPException(status_code=409, detail="agent key exists")
+    meta = payload.metadata or {}
+    if payload.prompt_template:
+        meta = dict(meta)
+        meta["prompt_template"] = payload.prompt_template
     a = Agent(
         network_id=network_id,
         key=payload.key,
         display_name=payload.display_name,
         description=payload.description,
         allow_respond=payload.allow_respond,
-        meta=payload.metadata or {},
+        meta=meta,
     )
     db.add(a)
     db.flush()
@@ -352,15 +357,35 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
     agents = list(db.scalars(select(Agent).where(Agent.network_id == network_id)).all())
     tools = list(db.scalars(select(NetworkTool).where(NetworkTool.network_id == network_id)).all())
 
+    # Precompute lookups
+    agent_desc = {a.key: (a.description or "") for a in agents}
+    tool_desc = {t.key: (t.description or "") for t in tools}
+
+    def _render_prompt(a: Agent) -> Optional[str]:
+        tmpl = (a.meta or {}).get("prompt_template")
+        if not tmpl:
+            return None
+        eq = [t.key for t in a.equipped_tools]
+        rt = [r.key for r in a.allowed_routes]
+        tools_list = "\n".join(f"- {k}: {tool_desc.get(k,'')}" for k in eq) if eq else "(none)"
+        routes_list = "\n".join(f"- {k}: {agent_desc.get(k,'')}" for k in rt) if rt else "(none)"
+        # Simple placeholder replacement; future: support Jinja2 if needed
+        out = tmpl.replace("{tools}", tools_list).replace("{routes}", routes_list)
+        out = out.replace("{agent_key}", a.key)
+        return out
+
     out_agents = []
     for a in agents:
         out_agents.append(
             {
                 "key": a.key,
+                "display_name": a.display_name,
+                "description": a.description,
                 "allow_respond": a.allow_respond,
                 "equipped_tools": [t.key for t in a.equipped_tools],
                 "allowed_routes": [r.key for r in a.allowed_routes],
                 "metadata": a.meta or {},
+                "prompt": _render_prompt(a),
             }
         )
 

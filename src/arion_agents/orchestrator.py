@@ -52,6 +52,7 @@ class RunConfig(BaseModel):
     allowed_routes: List[str]
     allow_respond: bool = True
     system_params: Dict[str, Any] = Field(default_factory=dict)
+    prompt: Optional[str] = None
 
 
 def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> OrchestratorResult:

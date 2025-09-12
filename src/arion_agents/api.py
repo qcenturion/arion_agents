@@ -157,6 +157,7 @@ def _build_run_config(network: str, agent_key: str, version: int | None, allow_r
         equipped = list(a.get("equipped_tools", []))
         routes = list(a.get("allowed_routes", []))
         allow = bool(a.get("allow_respond", False)) and allow_respond
+        prompt = a.get("prompt")
         # Build tools_map for current agent
         tools_map = {}
         for tk in equipped:
@@ -178,6 +179,7 @@ def _build_run_config(network: str, agent_key: str, version: int | None, allow_r
             allowed_routes=routes,
             allow_respond=allow,
             system_params=system_params or {},
+            prompt=prompt,
         )
 
 
