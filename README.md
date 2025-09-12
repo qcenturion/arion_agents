@@ -6,7 +6,20 @@ A Python project scaffold for building LLM-powered agents. This repo uses a mode
 
 - Python: verified locally (see below)
 - Install deps: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
-- Run tests: `pytest`
+- Run unit tests (SQLite): `pytest`
+- Run API: `make run-api`
+
+## Local Postgres (recommended)
+
+Use Docker for local DB to mirror production behavior.
+
+- Start DB: `make db-up`
+- Run migrations: `make db-migrate` (uses `DB_URL` Make var, default: `postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents`)
+- Tail logs: `make db-logs`
+- Stop DB: `make db-down`
+- Integration test (requires DB up): `make test-int`
+
+Set `DATABASE_URL` in your environment to point to Postgres for the API.
 
 ## Layout
 

@@ -28,3 +28,23 @@ run-api:
 
 clean:
 	rm -rf $(VENV) .pytest_cache .ruff_cache
+
+# --- Local Postgres (Docker) ---
+.PHONY: db-up db-down db-logs db-migrate test-int
+
+DB_URL?=postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents
+
+db-up:
+	docker compose up -d db
+
+db-down:
+	docker compose down
+
+db-logs:
+	docker compose logs -f db
+
+db-migrate:
+	DATABASE_URL=$(DB_URL) alembic -c alembic.ini upgrade head
+
+test-int:
+	DATABASE_URL=$(DB_URL) pytest -q tests_int
