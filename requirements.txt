@@ -7,6 +7,6 @@ opentelemetry-instrumentation-fastapi>=0.47b0
 opentelemetry-instrumentation-requests>=0.47b0
 ruff>=0.5
 SQLAlchemy>=2.0
-alembic>=1.13
 psycopg[binary]>=3.1
 httpx>=0.25
+requests>=2.31

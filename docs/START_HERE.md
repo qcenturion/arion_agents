@@ -49,6 +49,28 @@ Quick config API flow
 - Publish snapshot: `POST /config/networks/{network_id}/versions/compile_and_publish`
 - Invoke using snapshot: `POST /invoke` with `{ network, agent_key, instruction, version? }`
 
+Seed and curl examples
+- Seed everything via script (API must be running):
+  - `make seed-demo`
+  - Overrides: `make seed-demo API_URL=http://127.0.0.1:8000`
+- Or use curl (assumes API at localhost:8000):
+  - Create global tool
+    `curl -sS -X POST localhost:8000/config/tools -H 'content-type: application/json' -d '{"key":"templater","display_name":"Template Retrieval","params_schema":{"intent":{"source":"agent","required":false},"customer_id":{"source":"system","required":true}}}'`
+  - Create network
+    `curl -sS -X POST localhost:8000/config/networks -H 'content-type: application/json' -d '{"name":"support"}'`
+  - Add tool to network (replace NET_ID)
+    `curl -sS -X POST localhost:8000/config/networks/NET_ID/tools -H 'content-type: application/json' -d '{"tool_keys":["templater"]}'`
+  - Create agents
+    `curl -sS -X POST localhost:8000/config/networks/NET_ID/agents -H 'content-type: application/json' -d '{"key":"triage","allow_respond":true}'`
+    `curl -sS -X POST localhost:8000/config/networks/NET_ID/agents -H 'content-type: application/json' -d '{"key":"writer","allow_respond":true}'`
+  - Assign tools/routes (replace TRIAGE_ID)
+    `curl -sS -X PUT localhost:8000/config/networks/NET_ID/agents/TRIAGE_ID/tools -H 'content-type: application/json' -d '{"tool_keys":["templater"]}'`
+    `curl -sS -X PUT localhost:8000/config/networks/NET_ID/agents/TRIAGE_ID/routes -H 'content-type: application/json' -d '{"agent_keys":["writer"]}'`
+  - Publish snapshot
+    `curl -sS -X POST localhost:8000/config/networks/NET_ID/versions/compile_and_publish -H 'content-type: application/json' -d '{}'`
+  - Invoke (replace VERSION if needed)
+    `curl -sS -X POST localhost:8000/invoke -H 'content-type: application/json' -d '{"network":"support","agent_key":"triage","instruction":{"reasoning":"done","action":{"type":"RESPOND","payload":{"ok":true}}}}'`
+
 Next steps (high‑value)
 - Network tool overrides: add PATCH endpoint to edit network‑local `params_schema` and metadata after replication.
 - Snapshot validation: validate graph (dangling routes, tool param schemas, required system params).
