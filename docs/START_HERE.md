@@ -49,6 +49,13 @@ Quick config API flow
 - Publish snapshot: `POST /config/networks/{network_id}/versions/compile_and_publish`
 - Invoke using snapshot: `POST /invoke` with `{ network, agent_key, instruction, version? }`
 
+LLM quick check (Gemini)
+- Local secret file: `echo "<key>" > .secrets/gemini_api_key` (git-ignored)
+- Or set env: `export GEMINI_API_KEY=$(cat .secrets/gemini_api_key)` and optional `export GEMINI_MODEL=gemini-2.5-flash`
+- Test endpoint (API running):
+  - `curl -sS -X POST :8000/llm/complete -H 'content-type: application/json' -d '{"prompt":"Say hello"}'`
+  - Returns: `{ "model": "...", "text": "..." }`
+
 Seed and curl examples
 - Seed everything via script (API must be running):
   - `make seed-demo`

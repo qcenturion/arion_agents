@@ -67,6 +67,59 @@ class InvokeRequest(BaseModel):
     system_params: dict = {}
 
 
+class LLMCompleteRequest(BaseModel):
+    prompt: str
+    model: str | None = None
+
+
+@app.post("/llm/complete")
+async def llm_complete(payload: LLMCompleteRequest) -> dict:
+    """Test endpoint to verify Gemini connectivity and return a completion.
+
+    Requires env var GEMINI_API_KEY. Optional GEMINI_MODEL or request.model.
+    """
+    try:
+        from arion_agents.llm import gemini_complete, LLMNotConfigured
+
+        text = gemini_complete(payload.prompt, payload.model)
+        return {"model": payload.model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash"), "text": text}
+    except Exception as e:  # Catch config and runtime errors
+        msg = str(e)
+        raise HTTPException(status_code=400, detail=msg)
+
+
+class DraftInstructionRequest(BaseModel):
+    prompt: str
+    model: str | None = None
+
+
+@app.post("/llm/draft-instruction")
+async def draft_instruction(payload: DraftInstructionRequest) -> dict:
+    """Generate a structured Instruction using Pydantic AI with Gemini.
+
+    Uses disabled thinking via google_thinking_config with budget 0.
+    """
+    try:
+        from pydantic_ai import Agent
+        from pydantic_ai.models.google import GoogleModel, GoogleProvider
+        from pydantic_ai.models import ModelSettings
+        from arion_agents.orchestrator import Instruction
+        from arion_agents.llm import _require_gemini_config
+
+        api_key, default_model = _require_gemini_config()
+        model_name = payload.model or default_model
+        settings = ModelSettings(google_thinking_config={"thinking_budget": 0})
+        provider = GoogleProvider(api_key=api_key)
+        model = GoogleModel(model_name, provider=provider, settings=settings)
+        agent = Agent(model=model, output_type=Instruction)
+        # Provide minimal instruction; output_type drives schema (async)
+        res = await agent.run(payload.prompt)
+        out = res.output
+        return {"model": model_name, "instruction": out.model_dump()}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def _build_run_config(network: str, agent_key: str, version: int | None, allow_respond: bool, system_params: dict):
     from sqlalchemy import select, func
     from arion_agents.db import get_session

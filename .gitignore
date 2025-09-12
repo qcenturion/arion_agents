@@ -68,3 +68,6 @@ venv.bak/
 # macOS
 .DS_Store
 
+# Local secrets and env overrides
+.env.local
+.secrets/

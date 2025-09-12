@@ -5,7 +5,8 @@ A Python project scaffold for building LLM-powered agents. This repo uses a mode
 ## Quickstart
 
 - Python: verified locally (see below)
-- Install deps: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
+- Activate existing venv: `cd arion_agents && source .venv/bin/activate`
+- Install/Update deps: `pip install -r requirements.txt`
 - Run unit tests (SQLite): `pytest`
 - Run API: `make run-api`
 
@@ -19,9 +20,16 @@ This repo includes a ready-to-use virtualenv at `arion_agents/.venv` to keep too
 - Run tests from repo root of `arion_agents/`: `pytest -q`
 - Start API from `arion_agents/`: `PYTHONPATH=src python -m arion_agents api` or `make run-api`
 
+Verify the baked-in venv
+- Check Python version: `./.venv/bin/python -V` (expected: `Python 3.12.8`)
+- Check pip: `./.venv/bin/pip -V`
+- Confirm path: `./.venv/bin/python -c 'import sys; print(sys.executable)'`
+
 Notes
 - Tests and the API expect the package path `src/` to be on `PYTHONPATH`. The `Makefile` handles this for API runs; for ad‑hoc runs use `PYTHONPATH=src`.
 - If you see import errors while running from the monorepo root, `cd arion_agents` first so relative paths match the expected layout.
+
+Tip: Avoid creating a new venv. Use the bundled venv above for consistent local runs unless you intentionally need to recreate it.
 
 ## Open Next
 
@@ -87,6 +95,19 @@ Config API (high‑level)
 
 Invoke API
 - `POST /invoke` with `{ network, agent_key, version?, instruction, system_params?, allow_respond? }`
+
+## LLM (Gemini) Setup (Optional)
+- Local secret file (preferred): put your key in `arion_agents/.secrets/gemini_api_key` (this path is git-ignored)
+- Or set env var: `export GEMINI_API_KEY=$(cat .secrets/gemini_api_key)`
+- Optional model: `export GEMINI_MODEL=gemini-1.5-flash`
+- Test completion (API running):
+  - `curl -sS -X POST :8000/llm/complete -H 'content-type: application/json' -d '{"prompt":"Say hello"}'`
+  - Expected: JSON with a `text` field containing the model reply
+
+Structured output (Pydantic AI)
+- Draft an Instruction object from free text:
+  - `curl -sS -X POST :8000/llm/draft-instruction -H 'content-type: application/json' -d '{"prompt":"Return a RESPOND instruction with payload {\"hello\":\"world\"} and reasoning \"done\""}'`
+  - Returns: `{ "model": "...", "instruction": { ... } }`
 
 
 ## Project Overview
