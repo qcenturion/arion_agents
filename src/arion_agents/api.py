@@ -60,28 +60,55 @@ async def health() -> dict:
 
 class InvokeRequest(BaseModel):
     instruction: dict
-    agent_name: str
+    network: str  # network name (slug)
+    agent_key: str
+    version: int | None = None
     allow_respond: bool = True
     system_params: dict = {}
 
 
-def _build_run_config(agent_name: str, allow_respond: bool, system_params: dict):
-    from sqlalchemy import select
-    from arion_agents.models import Agent
+def _build_run_config(network: str, agent_key: str, version: int | None, allow_respond: bool, system_params: dict):
+    from sqlalchemy import select, func
     from arion_agents.db import get_session
+    from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
     from arion_agents.orchestrator import RunConfig
 
     with get_session() as db:
-        agent = db.scalar(select(Agent).where(Agent.name == agent_name))
-        if not agent:
-            raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
-        equipped = [t.name for t in agent.equipped_tools]
-        routes = [a.name for a in agent.allowed_routes]
+        net = db.scalar(select(Network).where(func.lower(Network.name) == network.strip().lower()))
+        if not net:
+            raise HTTPException(status_code=404, detail=f"Network '{network}' not found")
+        ver_id = None
+        if version is not None:
+            ver = db.scalar(
+                select(NetworkVersion).where(
+                    (NetworkVersion.network_id == net.id) & (NetworkVersion.version == version)
+                )
+            )
+            if not ver:
+                raise HTTPException(status_code=404, detail=f"Version {version} not found for network '{network}'")
+            ver_id = ver.id
+        else:
+            ver_id = net.current_version_id
+        if not ver_id:
+            raise HTTPException(status_code=400, detail="No published version for network")
+        snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
+        if not snap:
+            raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
+        graph = snap.compiled_graph or {}
+        # Build config for the requested agent
+        agents = {a["key"].lower(): a for a in graph.get("agents", [])}
+        tools = {t["key"].lower(): t for t in graph.get("tools", [])}
+        a = agents.get(agent_key.strip().lower())
+        if not a:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not in snapshot")
+        equipped = list(a.get("equipped_tools", []))
+        routes = list(a.get("allowed_routes", []))
+        allow = bool(a.get("allow_respond", False)) and allow_respond
         return RunConfig(
-            current_agent=agent.name,
+            current_agent=a["key"],
             equipped_tools=equipped,
             allowed_routes=routes,
-            allow_respond=allow_respond,
+            allow_respond=allow,
             system_params=system_params or {},
         )
 
@@ -97,12 +124,12 @@ async def invoke(payload: InvokeRequest) -> dict:
             span.set_attribute("request.payload_size", len(str(payload.model_dump())))
             trace_id = _format_trace_id(span.get_span_context().trace_id)
             instr = Instruction.model_validate(payload.instruction)
-            cfg = _build_run_config(payload.agent_name, payload.allow_respond, payload.system_params)
+            cfg = _build_run_config(payload.network, payload.agent_key, payload.version, payload.allow_respond, payload.system_params)
             result = execute_instruction(instr, cfg)
             return {"trace_id": trace_id, "result": result.model_dump()}
     # Fallback when OTel is not available/disabled
     instr = Instruction.model_validate(payload.instruction)
-    cfg = _build_run_config(payload.agent_name, payload.allow_respond, payload.system_params)
+    cfg = _build_run_config(payload.network, payload.agent_key, payload.version, payload.allow_respond, payload.system_params)
     result = execute_instruction(instr, cfg)
     return {"trace_id": None, "result": result.model_dump()}
 

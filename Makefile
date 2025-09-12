@@ -5,7 +5,7 @@ PYTHON?=$(VENV)/bin/python
 PYTEST?=$(VENV)/bin/pytest
 RUFF?=$(VENV)/bin/ruff
 
-.PHONY: venv install test lint format run-api clean
+.PHONY: venv install test lint format run-api clean db-up db-down db-logs db-init
 
 venv:
 	$(PY) -m venv $(VENV)
@@ -15,7 +15,7 @@ install: venv
 	$(PIP) install -r requirements.txt
 
 test:
-	$(PYTEST) -q
+	PYTHONPATH=src DATABASE_URL?=postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents $(PYTEST) -q
 
 lint:
 	$(RUFF) check src tests
@@ -30,8 +30,6 @@ clean:
 	rm -rf $(VENV) .pytest_cache .ruff_cache
 
 # --- Local Postgres (Docker) ---
-.PHONY: db-up db-down db-logs db-migrate test-int
-
 DB_URL?=postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents
 
 db-up:
@@ -43,8 +41,5 @@ db-down:
 db-logs:
 	docker compose logs -f db
 
-db-migrate:
-	DATABASE_URL=$(DB_URL) alembic -c alembic.ini upgrade head
-
-test-int:
-	DATABASE_URL=$(DB_URL) pytest -q tests_int
+db-init:
+	DATABASE_URL=$(DB_URL) PYTHONPATH=src $(PYTHON) -c "from arion_agents.db import init_db; init_db(); print('DB initialized')"

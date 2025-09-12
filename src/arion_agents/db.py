@@ -6,16 +6,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///config.db")
+# Default to local Postgres for dev; override via DATABASE_URL
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents",
+)
 
 
 def _engine_kwargs(url: str) -> dict:
-    if url.startswith("sqlite:"):
-        return {"connect_args": {"check_same_thread": False}}
+    # No special kwargs for Postgres
     return {}
 
 
-engine = create_engine(DATABASE_URL, future=True, **_engine_kwargs(DATABASE_URL))
+engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, **_engine_kwargs(DATABASE_URL))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
 
 Base = declarative_base()
@@ -33,3 +36,10 @@ def get_session() -> Iterator[Session]:
     finally:
         session.close()
 
+
+def init_db() -> None:
+    """Create all tables for configured models if missing (dev/MVP bootstrap)."""
+    # Import models to register metadata, then create
+    from . import config_models  # noqa: F401
+
+    Base.metadata.create_all(bind=engine)

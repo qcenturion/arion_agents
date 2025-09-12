@@ -9,22 +9,42 @@ A Python project scaffold for building LLM-powered agents. This repo uses a mode
 - Run unit tests (SQLite): `pytest`
 - Run API: `make run-api`
 
+## Local Venv (Project-Scoped)
+
+This repo includes a ready-to-use virtualenv at `arion_agents/.venv` to keep tools and versions consistent.
+
+- Activate: `source .venv/bin/activate`
+- Python: 3.12.8 (from the venv)
+- Install/Update deps: `pip install -r requirements.txt`
+- Run tests from repo root of `arion_agents/`: `pytest -q`
+- Start API from `arion_agents/`: `PYTHONPATH=src python -m arion_agents api` or `make run-api`
+
+Notes
+- Tests and the API expect the package path `src/` to be on `PYTHONPATH`. The `Makefile` handles this for API runs; for ad‑hoc runs use `PYTHONPATH=src`.
+- If you see import errors while running from the monorepo root, `cd arion_agents` first so relative paths match the expected layout.
+
 ## Open Next
 
 - Start here for context and next steps: `docs/START_HERE.md`
 - Local development guide (DB, migrations, API): `docs/LOCAL_DEV.md`
 
-## Local Postgres (recommended)
+## Local Postgres (required for API & tests)
 
-Use Docker for local DB to mirror production behavior.
+Use Docker for local DB.
 
 - Start DB: `make db-up`
-- Run migrations: `make db-migrate` (uses `DB_URL` Make var, default: `postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents`)
+- Initialize schema (no Alembic yet): `make db-init` (uses `DB_URL`, default: `postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents`)
 - Tail logs: `make db-logs`
 - Stop DB: `make db-down`
-- Integration test (requires DB up): `make test-int`
 
-Set `DATABASE_URL` in your environment to point to Postgres for the API.
+Set `DATABASE_URL` if you want a non-default URL.
+
+Created tables after migrations
+- Runtime (placeholder): `agents`, `tools`, `agent_tools`, `agent_routes`
+- Config (edit-time): `cfg_networks`, `cfg_agents`, `cfg_tools`, `cfg_agent_tools`, `cfg_agent_routes`, `cfg_network_versions`, `cfg_compiled_snapshots`
+
+Override the DB URL
+- Example: `make db-migrate DB_URL=postgresql+psycopg://user:pass@localhost:5432/yourdb`
 
 ## Layout
 
@@ -55,9 +75,18 @@ This machine reports Python 3.12.8. If you need to support a different version, 
 
 ## Next steps
 
-- Confirm/adjust the feature roadmap files under `docs/features/`.
-- Add a GitHub remote and push the initial commit.
-- Decide on any LLM-specific evaluation tooling to complement `pytest` (see docs).
+- Create a network, add global tools, add those tools to a network, create agents, assign tools/routes, then compile+publish a snapshot via the config API. Finally use `/invoke` with `network` + `agent_key`.
+
+Config API (high‑level)
+- Global tools: `POST /config/tools` (key, params_schema), `GET /config/tools`
+- Networks: `POST/GET /config/networks`
+- Network tools: `POST/GET /config/networks/{network_id}/tools`
+- Agents: `POST/GET /config/networks/{network_id}/agents`
+- Assignments: `PUT /config/networks/{network_id}/agents/{agent_id}/tools|routes`
+- Publish: `POST /config/networks/{network_id}/versions/compile_and_publish`
+
+Invoke API
+- `POST /invoke` with `{ network, agent_key, version?, instruction, system_params?, allow_respond? }`
 
 
 ## Project Overview

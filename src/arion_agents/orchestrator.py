@@ -56,7 +56,8 @@ TOOL_REGISTRY: Dict[str, ToolSpec] = {
         name="TemplateRetrievalTool",
         description="Fetch pre-written response template by intent",
         params=[
-            ToolParamSpec(name="intent", source="agent", required=True),
+            # Keep params permissive for initial placeholder execution
+            ToolParamSpec(name="intent", source="agent", required=False),
             ToolParamSpec(name="customer_id", source="system", required=True),
         ],
     ),
