@@ -5,6 +5,7 @@ from arion_agents.orchestrator import (
     RespondAction,
     RouteToAgentAction,
     UseToolAction,
+    RunConfig,
     execute_instruction,
 )
 
@@ -24,7 +25,8 @@ def test_instruction_use_tool_not_implemented():
         reasoning="Need to fetch",
         action=UseToolAction(type="USE_TOOL", tool_name="TemplateRetrievalTool", tool_params={}),
     )
-    result = execute_instruction(instr)
+    cfg = RunConfig(current_agent="A", equipped_tools=["TemplateRetrievalTool"], allowed_routes=[], allow_respond=True, system_params={"customer_id": "123"})
+    result = execute_instruction(instr, cfg)
     assert result.status == "not_implemented"
 
 
@@ -33,7 +35,8 @@ def test_instruction_route_not_implemented():
         reasoning="Hand over",
         action=RouteToAgentAction(type="ROUTE_TO_AGENT", target_agent_name="HumanRemarksAgent", context={}),
     )
-    result = execute_instruction(instr)
+    cfg = RunConfig(current_agent="A", equipped_tools=[], allowed_routes=["HumanRemarksAgent"], allow_respond=True, system_params={})
+    result = execute_instruction(instr, cfg)
     assert result.status == "not_implemented"
 
 
@@ -45,4 +48,3 @@ def test_invalid_action_rejected():
                 "action": {"type": "UNKNOWN", "foo": 1},
             }
         )
-

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,10 +24,28 @@ class ToolCreate(BaseModel):
     name: str
     description: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name cannot be empty")
+        return v
+
 
 class ToolUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v2 = v.strip()
+        if not v2:
+            raise ValueError("name cannot be empty")
+        return v2
 
 
 class ToolOut(BaseModel):
@@ -43,10 +61,28 @@ class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name cannot be empty")
+        return v
+
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v2 = v.strip()
+        if not v2:
+            raise ValueError("name cannot be empty")
+        return v2
 
 
 class AgentOut(BaseModel):
@@ -69,7 +105,7 @@ def list_tools(db: Session = Depends(get_db_dep)):
 @router.post("/tools", response_model=ToolOut, status_code=status.HTTP_201_CREATED)
 def create_tool(payload: ToolCreate, db: Session = Depends(get_db_dep)):
     if db.scalar(select(Tool).where(Tool.name == payload.name)):
-        raise HTTPException(status_code=400, detail="Tool name already exists")
+        raise HTTPException(status_code=409, detail="Tool name already exists")
     t = Tool(name=payload.name, description=payload.description)
     db.add(t)
     db.flush()
@@ -91,7 +127,7 @@ def update_tool(tool_id: int, payload: ToolUpdate, db: Session = Depends(get_db_
         raise HTTPException(status_code=404, detail="Tool not found")
     if payload.name is not None:
         if payload.name != t.name and db.scalar(select(Tool).where(Tool.name == payload.name)):
-            raise HTTPException(status_code=400, detail="Tool name already exists")
+            raise HTTPException(status_code=409, detail="Tool name already exists")
         t.name = payload.name
     if payload.description is not None:
         t.description = payload.description
@@ -128,7 +164,8 @@ def list_agents(db: Session = Depends(get_db_dep)):
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
 def create_agent(payload: AgentCreate, db: Session = Depends(get_db_dep)):
     if db.scalar(select(Agent).where(Agent.name == payload.name)):
-        raise HTTPException(status_code=400, detail="Agent name already exists")
+        # Global uniqueness for now; will scope by network later
+        raise HTTPException(status_code=409, detail="Agent name already exists")
     a = Agent(name=payload.name, description=payload.description)
     db.add(a)
     db.flush()
@@ -151,7 +188,7 @@ def update_agent(agent_id: int, payload: AgentUpdate, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Agent not found")
     if payload.name is not None:
         if payload.name != a.name and db.scalar(select(Agent).where(Agent.name == payload.name)):
-            raise HTTPException(status_code=400, detail="Agent name already exists")
+            raise HTTPException(status_code=409, detail="Agent name already exists")
         a.name = payload.name
     if payload.description is not None:
         a.description = payload.description
@@ -163,6 +200,18 @@ def update_agent(agent_id: int, payload: AgentUpdate, db: Session = Depends(get_
 
 class ToolNames(BaseModel):
     tools: List[str]
+
+    @field_validator("tools")
+    @classmethod
+    def dedupe_tools(cls, v: List[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for name in v:
+            name2 = name.strip()
+            if name2 and name2 not in seen:
+                out.append(name2)
+                seen.add(name2)
+        return out
 
 
 @router.put("/agents/{agent_id}/tools", response_model=AgentOut)
@@ -188,6 +237,18 @@ def set_agent_tools(agent_id: int, payload: ToolNames, db: Session = Depends(get
 class RouteNames(BaseModel):
     agents: List[str]
 
+    @field_validator("agents")
+    @classmethod
+    def dedupe_agents(cls, v: List[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for name in v:
+            name2 = name.strip()
+            if name2 and name2 not in seen:
+                out.append(name2)
+                seen.add(name2)
+        return out
+
 
 @router.put("/agents/{agent_id}/routes", response_model=AgentOut)
 def set_agent_routes(agent_id: int, payload: RouteNames, db: Session = Depends(get_db_dep)):
@@ -200,6 +261,8 @@ def set_agent_routes(agent_id: int, payload: RouteNames, db: Session = Depends(g
         missing = sorted(set(payload.agents) - found)
         if missing:
             raise HTTPException(status_code=400, detail=f"Unknown agents: {', '.join(missing)}")
+        if any(ag.id == agent_id for ag in targets):
+            raise HTTPException(status_code=400, detail="Agent cannot route to itself")
         a.allowed_routes = targets
     else:
         a.allowed_routes = []
@@ -207,4 +270,3 @@ def set_agent_routes(agent_id: int, payload: RouteNames, db: Session = Depends(g
     db.flush()
     db.refresh(a)
     return _agent_out(a)
-

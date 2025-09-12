@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
 
 # OpenTelemetry is optional at import time. We lazy-import and no-op if missing.
@@ -60,6 +60,30 @@ async def health() -> dict:
 
 class InvokeRequest(BaseModel):
     instruction: dict
+    agent_name: str
+    allow_respond: bool = True
+    system_params: dict = {}
+
+
+def _build_run_config(agent_name: str, allow_respond: bool, system_params: dict):
+    from sqlalchemy import select
+    from arion_agents.models import Agent
+    from arion_agents.db import get_session
+    from arion_agents.orchestrator import RunConfig
+
+    with get_session() as db:
+        agent = db.scalar(select(Agent).where(Agent.name == agent_name))
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+        equipped = [t.name for t in agent.equipped_tools]
+        routes = [a.name for a in agent.allowed_routes]
+        return RunConfig(
+            current_agent=agent.name,
+            equipped_tools=equipped,
+            allowed_routes=routes,
+            allow_respond=allow_respond,
+            system_params=system_params or {},
+        )
 
 
 @app.post("/invoke")
@@ -73,11 +97,13 @@ async def invoke(payload: InvokeRequest) -> dict:
             span.set_attribute("request.payload_size", len(str(payload.model_dump())))
             trace_id = _format_trace_id(span.get_span_context().trace_id)
             instr = Instruction.model_validate(payload.instruction)
-            result = execute_instruction(instr)
+            cfg = _build_run_config(payload.agent_name, payload.allow_respond, payload.system_params)
+            result = execute_instruction(instr, cfg)
             return {"trace_id": trace_id, "result": result.model_dump()}
     # Fallback when OTel is not available/disabled
     instr = Instruction.model_validate(payload.instruction)
-    result = execute_instruction(instr)
+    cfg = _build_run_config(payload.agent_name, payload.allow_respond, payload.system_params)
+    result = execute_instruction(instr, cfg)
     return {"trace_id": None, "result": result.model_dump()}
 
 # Config router
