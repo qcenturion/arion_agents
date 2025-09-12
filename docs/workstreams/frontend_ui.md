@@ -1,7 +1,10 @@
 # Workstream: Frontend UI (SPA)
 
 ## Goals
-- Web UI to manage config and visualize agent flows
+- Control plane for agents/tools/routes (CRUD)
+- Visualize topology (graph) and recent runs
+- Trigger a run with user-provided input (chat/input box)
+- Real-time execution log: agent transitions, tool calls, and results
 - Integrate with Jaeger/Grafana views
 
 ## Decisions
@@ -15,6 +18,8 @@
 - M2: Config editor
   - [ ] CRUD for agents/tools via API
   - [ ] Validation and previews
-- M3: Visualization
+- M3: Visualization & runs
   - [ ] Network graph of agent routes and tool usage
+  - [ ] Start run from UI with input payload
+  - [ ] Live log view via SSE/WebSocket from `/runs/{run_id}/events`
   - [ ] Deep links to Jaeger traces

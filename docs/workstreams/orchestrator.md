@@ -6,6 +6,7 @@
 - Enforce permissions (tools, routes) from config
 - Maintain session state and history
 - Emit rich OpenTelemetry traces/spans with events
+ - Emit domain-level execution events for UI streaming (run_id-scoped)
 
 ## Decisions
 - Instruction schema: as defined in README (reasoning + action with USE_TOOL | ROUTE_TO_AGENT | RESPOND)
@@ -25,6 +26,10 @@
   - [ ] Error handling, retries for tool calls (#issue)
   - [ ] Structured logs and trace attributes (#issue)
   - [ ] Trace IDs surfaced in responses (#issue)
+- M4: Event streaming
+  - [ ] Define `run_id` and EventPublisher interface (#issue)
+  - [ ] Publish per-step events (agent chosen, tool invoked, result/error) (#issue)
+  - [ ] Pluggable transports (in-memory, Pub/Sub later) (#issue)
 
 ## Acceptance Criteria
 - RESPOND action terminates loop, returns payload
