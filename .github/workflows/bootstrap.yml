@@ -1,0 +1,73 @@
+name: Bootstrap
+
+on:
+  push:
+    branches:
+      - bootstrap/**
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  seed:
+    name: Seed labels and issues
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [
+              {name:'workstream:orchestrator', color:'0E8A16', description:'Orchestrator tasks'},
+              {name:'workstream:agents_llm', color:'5319E7', description:'Agents & LLM tasks'},
+              {name:'workstream:tools', color:'1D76DB', description:'Tools & integrations'},
+              {name:'workstream:api_config', color:'0052CC', description:'API & Config Store'},
+              {name:'workstream:observability', color:'FBCA04', description:'OTel/Jaeger/Prometheus/Grafana'},
+              {name:'workstream:frontend_ui', color:'B60205', description:'Control plane UI'},
+              {name:'workstream:devops_github', color:'5319E7', description:'CI/CD, repo hygiene'},
+              {name:'workstream:security', color:'D93F0B', description:'Security & compliance'},
+              {name:'type:task', color:'C5DEF5', description:'Concrete task'},
+              {name:'type:feature', color:'84B6EB', description:'Feature work'},
+              {name:'type:bug', color:'EE0701', description:'Bug'},
+              {name:'epic', color:'0E8A16', description:'Epic/large scope'},
+            ];
+            for (const l of labels) {
+              try {
+                await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: l.name });
+                core.info(`Label exists: ${l.name}`);
+              } catch (e) {
+                core.info(`Creating label: ${l.name}`);
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name: l.name, color: l.color, description: l.description });
+              }
+            }
+
+      - name: Seed issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const seeds = [
+              { title: 'API/Config: init Alembic and SQLAlchemy models', body: 'Define agents/tools/routes models and baseline migration. Acceptance: models created, alembic revision generated, tests for model creation.', labels: ['workstream:api_config','type:task'] },
+              { title: 'API/Config: CRUD endpoints for /config/*', body: 'Implement CRUD for agents, tools, and route associations with validation. Acceptance: endpoints tested via pytest.', labels: ['workstream:api_config','type:feature'] },
+              { title: 'Orchestrator: enforce equipped_tools and allowed_routes', body: 'Validate requested actions against agent config; block and log disallowed operations.', labels: ['workstream:orchestrator','type:task'] },
+              { title: 'Orchestrator: system-provided parameter injection', body: 'Inject secure params (e.g., customer_id) from state; prevent LLM-provided overrides.', labels: ['workstream:orchestrator','type:task'] },
+              { title: 'Orchestrator: run_id and EventPublisher interface', body: 'Define run_id and publish per-step events; add in-memory publisher.', labels: ['workstream:orchestrator','type:feature'] },
+              { title: 'API: SSE endpoint /runs/{run_id}/events', body: 'Serve real-time execution events for UI via Server-Sent Events (SSE).', labels: ['workstream:api_config','type:feature'] },
+              { title: 'Observability: docker-compose for OTel Collector + Jaeger + Prometheus + Grafana', body: 'Local stack to receive and visualize traces/metrics.', labels: ['workstream:observability','type:feature'] },
+              { title: 'Frontend: scaffold SPA shell and config views', body: 'Create initial SPA with routing and placeholder pages for agents/tools/routes.', labels: ['workstream:frontend_ui','type:feature'] },
+              { title: 'Frontend: run trigger and live log view', body: 'Add input form to trigger /invoke and subscribe to /runs/{run_id}/events.', labels: ['workstream:frontend_ui','type:feature'] },
+              { title: 'DevOps: add pre-commit hooks (ruff/black optional)', body: 'Pre-commit setup and CI verification.', labels: ['workstream:devops_github','type:task'] },
+              { title: 'Security: secrets handling and redaction utilities', body: 'Document .env usage, add helpers to redact sensitive data in logs/traces.', labels: ['workstream:security','type:task'] },
+              { title: 'Deployment: Dockerfile and Cloud Run deployment', body: 'Containerize API, push to Artifact Registry, and deploy to Cloud Run from CI.', labels: ['workstream:devops_github','type:feature','epic'] },
+            ];
+            const { data: existingIssues } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
+            const existingTitles = new Set(existingIssues.map(i => i.title));
+            for (const s of seeds) {
+              if (existingTitles.has(s.title)) { core.info(`Issue exists: ${s.title}`); continue; }
+              core.info(`Creating issue: ${s.title}`);
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title: s.title, body: s.body, labels: s.labels });
+            }
