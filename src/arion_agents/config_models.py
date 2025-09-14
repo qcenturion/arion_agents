@@ -83,6 +83,7 @@ class Agent(Base):
     display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     allow_respond: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
+    is_default: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
     meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
     network: Mapped[Network] = relationship("Network", back_populates="agents")

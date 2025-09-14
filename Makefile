@@ -47,3 +47,7 @@ db-init:
 seed-demo:
 	API_URL?=http://localhost:8000
 	API_URL=$(API_URL) $(PYTHON) tools/seed_demo.py
+
+seed-time:
+	API_URL?=http://localhost:8000
+	API_URL=$(API_URL) $(PYTHON) tools/seed_time_demo.py

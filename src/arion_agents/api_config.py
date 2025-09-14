@@ -85,6 +85,7 @@ class AgentCreate(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     allow_respond: bool = True
+    is_default: bool = False
     metadata: dict = {}
     prompt_template: Optional[str] = None
 
@@ -275,6 +276,7 @@ def create_agent(network_id: int, payload: AgentCreate, db: Session = Depends(ge
         display_name=payload.display_name,
         description=payload.description,
         allow_respond=payload.allow_respond,
+        is_default=payload.is_default,
         meta=meta,
     )
     db.add(a)
@@ -375,6 +377,7 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
         return out
 
     out_agents = []
+    default_candidates = [a for a in agents if a.is_default]
     for a in agents:
         out_agents.append(
             {
@@ -382,6 +385,7 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
                 "display_name": a.display_name,
                 "description": a.description,
                 "allow_respond": a.allow_respond,
+                "is_default": a.is_default,
                 "equipped_tools": [t.key for t in a.equipped_tools],
                 "allowed_routes": [r.key for r in a.allowed_routes],
                 "metadata": a.meta or {},
@@ -402,9 +406,34 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
             }
         )
 
+    # Validations
+    if len(default_candidates) != 1:
+        raise HTTPException(status_code=400, detail="Exactly one default agent required")
+    if not any(a.allow_respond for a in agents):
+        raise HTTPException(status_code=400, detail="At least one agent must allow RESPOND")
+    # Reachability from default to a RESPOND-capable agent
+    adj = {a.key: [r.key for r in a.allowed_routes] for a in agents}
+    start = default_candidates[0].key
+    target_set = {a.key for a in agents if a.allow_respond}
+    seen = set()
+    stack = [start]
+    reachable = False
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        if cur in target_set:
+            reachable = True
+            break
+        stack.extend(adj.get(cur, []))
+    if not reachable:
+        raise HTTPException(status_code=400, detail="Default agent cannot reach any RESPOND-capable agent via routes")
+
     compiled = {
         "agents": out_agents,
         "tools": out_tools,
+        "default_agent_key": start,
         "adjacency": [
             {"from": a.key, "to": r.key} for a in agents for r in a.allowed_routes
         ],
@@ -439,3 +468,16 @@ def compile_and_publish(network_id: int, payload: PublishRequest, db: Session = 
     db.add(net)
     db.flush()
     return {"version": vnum, "version_id": ver.id, "snapshot_id": snap.id}
+
+
+@router.get("/networks/{network_id}/snapshot_current")
+def get_current_snapshot(network_id: int, db: Session = Depends(get_db_dep)):
+    net = db.get(Network, network_id)
+    if not net:
+        raise HTTPException(status_code=404, detail="network not found")
+    if not net.current_version_id:
+        raise HTTPException(status_code=400, detail="no current version for network")
+    snap = db.get(CompiledSnapshot, net.current_version_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    return snap.compiled_graph

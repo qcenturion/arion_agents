@@ -27,7 +27,7 @@ def test_instruction_use_tool_not_implemented():
     )
     cfg = RunConfig(current_agent="A", equipped_tools=["TemplateRetrievalTool"], allowed_routes=[], allow_respond=True, system_params={"customer_id": "123"})
     result = execute_instruction(instr, cfg)
-    assert result.status == "not_implemented"
+    assert result.status == "retry"
 
 
 def test_instruction_route_not_implemented():

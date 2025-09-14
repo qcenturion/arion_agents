@@ -13,7 +13,23 @@ def test_use_tool_forbids_system_params_from_agent():
         reasoning="call tool",
         action=UseToolAction(type="USE_TOOL", tool_name="TemplateRetrievalTool", tool_params={"customer_id": "hack"}),
     )
-    cfg = RunConfig(current_agent="A", equipped_tools=["TemplateRetrievalTool"], allowed_routes=[], allow_respond=True, system_params={"customer_id": "123"})
+    cfg = RunConfig(
+        current_agent="A",
+        equipped_tools=["TemplateRetrievalTool"],
+        tools_map={
+            "TemplateRetrievalTool": {
+                "key": "TemplateRetrievalTool",
+                "provider_type": "builtin:echo",
+                "params_schema": {
+                    "customer_id": {"source": "system", "required": True},
+                },
+                "metadata": {},
+            }
+        },
+        allowed_routes=[],
+        allow_respond=True,
+        system_params={"customer_id": "123"},
+    )
     res = execute_instruction(instr, cfg)
     assert res.status == "retry"
     assert "System params" in (res.error or "")
@@ -31,4 +47,3 @@ def test_route_not_permitted_returns_retry():
     cfg = RunConfig(current_agent="A", equipped_tools=[], allowed_routes=["C"], allow_respond=True, system_params={})
     res = execute_instruction(instr, cfg)
     assert res.status == "retry"
-

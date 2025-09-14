@@ -126,9 +126,12 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
             )
             secret_value = resolve_secret(tspec.secret_ref)
             tool = instantiate_tool(tool_cfg, secret_value)
+            import time
+            t0 = time.perf_counter()
             out = tool.run(ToolRunInput(params=merged, system=cfg.system_params, metadata=tspec.metadata))
+            dur_ms = int((time.perf_counter() - t0) * 1000)
             if out.ok:
-                return OrchestratorResult(status="ok", response={"tool": tspec.key, "result": out.result})
+                return OrchestratorResult(status="ok", response={"tool": tspec.key, "params": merged, "result": out.result, "duration_ms": dur_ms})
             return OrchestratorResult(status="error", error=out.error or "tool error")
         except Exception as e:
             return OrchestratorResult(status="error", error=f"tool execution failed: {e}")

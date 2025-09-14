@@ -120,6 +120,99 @@ async def draft_instruction(payload: DraftInstructionRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _build_constraints_text(cfg) -> str:
+    lines = []
+    lines.append("You MUST respond as JSON with fields: action (USE_TOOL|ROUTE_TO_AGENT|RESPOND), action_reasoning (string), action_details (object).")
+    if cfg.equipped_tools:
+        lines.append("Allowed tools and agent-provided params:")
+        for k in cfg.equipped_tools:
+            ts = cfg.tools_map.get(k)
+            if not ts:
+                continue
+            # ts may be a dict or a ToolRuntimeSpec
+            params_schema = getattr(ts, "params_schema", None)
+            if params_schema is None and isinstance(ts, dict):
+                params_schema = ts.get("params_schema")
+            ps = [name for name, spec in (params_schema or {}).items() if (spec or {}).get("source", "agent") == "agent"]
+            lines.append(f"- {k}: params={ps}")
+    if cfg.allowed_routes:
+        lines.append("Allowed routes (agent keys):")
+        for r in cfg.allowed_routes:
+            lines.append(f"- {r}")
+    lines.append("When using USE_TOOL, action_details must include tool_name and tool_params.")
+    lines.append("When routing, action_details must include target_agent_name.")
+    lines.append("When responding, put your payload in action_details.payload.")
+    return "\n".join(lines)
+
+
+class RunOnceRequest(BaseModel):
+    network: str
+    agent_key: str | None = None
+    user_message: str
+    version: int | None = None
+    system_params: dict = {}
+    model: str | None = None
+    debug: bool = False
+
+
+@app.post("/run")
+async def run_once(payload: RunOnceRequest) -> dict:
+    """One-step run: LLM decision → translate → execute → return result.
+
+    Uses compiled prompt + constraints; enforces structured JSON via google-genai JSON mode.
+    """
+    try:
+        from arion_agents.engine.loop import run_loop
+
+        # Resolve default agent from snapshot if not provided
+        from sqlalchemy import select, func
+        from arion_agents.db import get_session
+        from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
+
+        with get_session() as db:
+            net = db.scalar(select(Network).where(func.lower(Network.name) == payload.network.strip().lower()))
+            if not net:
+                raise HTTPException(status_code=404, detail=f"Network '{payload.network}' not found")
+            if payload.version is not None:
+                ver = db.scalar(
+                    select(NetworkVersion).where(
+                        (NetworkVersion.network_id == net.id) & (NetworkVersion.version == payload.version)
+                    )
+                )
+                if not ver:
+                    raise HTTPException(status_code=404, detail=f"Version {payload.version} not found for network '{payload.network}'")
+                ver_id = ver.id
+            else:
+                ver_id = net.current_version_id
+            if not ver_id:
+                raise HTTPException(status_code=400, detail="No published version for network")
+            snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
+            if not snap:
+                raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
+            graph = snap.compiled_graph or {}
+
+        default_agent = payload.agent_key or graph.get("default_agent_key")
+        if not default_agent:
+            raise HTTPException(status_code=400, detail="No default agent in snapshot and no agent_key provided")
+
+        def _get_cfg(agent_key: str):
+            return _build_run_config(payload.network, agent_key, payload.version, True, payload.system_params)
+
+        out = run_loop(
+            _get_cfg,
+            default_agent,
+            payload.user_message,
+            max_steps=10,
+            model=payload.model,
+            debug=payload.debug,
+        )
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def _build_run_config(network: str, agent_key: str, version: int | None, allow_respond: bool, system_params: dict):
     from sqlalchemy import select, func
     from arion_agents.db import get_session
@@ -211,3 +304,61 @@ try:
 except Exception:
     # Keep API importable even if config store is misconfigured
     pass
+
+
+class ResolvePromptRequest(BaseModel):
+    network: str
+    agent_key: str | None = None
+    user_message: str
+    version: int | None = None
+
+
+@app.post("/prompts/resolve")
+async def resolve_prompt(payload: ResolvePromptRequest) -> dict:
+    """Return the fully-resolved prompt string that would be sent to the LLM for the given agent.
+
+    Uses current compiled base prompt + empty tool history + constraints.
+    """
+    try:
+        from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt
+        # Identify default agent if not provided
+        from sqlalchemy import select, func
+        from arion_agents.db import get_session
+        from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
+
+        with get_session() as db:
+            net = db.scalar(select(Network).where(func.lower(Network.name) == payload.network.strip().lower()))
+            if not net:
+                raise HTTPException(status_code=404, detail=f"Network '{payload.network}' not found")
+            if payload.version is not None:
+                ver = db.scalar(
+                    select(NetworkVersion).where(
+                        (NetworkVersion.network_id == net.id) & (NetworkVersion.version == payload.version)
+                    )
+                )
+                if not ver:
+                    raise HTTPException(status_code=404, detail=f"Version {payload.version} not found for network '{payload.network}'")
+                ver_id = ver.id
+            else:
+                ver_id = net.current_version_id
+            if not ver_id:
+                raise HTTPException(status_code=400, detail="No published version for network")
+            snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
+            if not snap:
+                raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
+            graph = snap.compiled_graph or {}
+
+        agent_key = payload.agent_key or graph.get("default_agent_key")
+        if not agent_key:
+            raise HTTPException(status_code=400, detail="No default agent in snapshot and no agent_key provided")
+
+        # Build a transient cfg and resolve prompt
+        cfg = _build_run_config(payload.network, agent_key, payload.version, True, {})
+        constraints = build_constraints(cfg)
+        context = build_context(payload.user_message, exec_log=[], full_tool_outputs=[])
+        prompt = build_prompt(cfg.prompt, context, constraints)
+        return {"agent_key": agent_key, "prompt": prompt}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
