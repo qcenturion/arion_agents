@@ -1,159 +1,188 @@
-from __future__ import annotations
-
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional, List
 
 import sqlalchemy as sa
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint, text
+from sqlmodel import Field, Relationship, SQLModel, JSON, Column, text
+
 from .db import JSONType
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from .db import Base
 
 
-class Network(Base):
-    __tablename__ = "cfg_networks"
-
-    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(sa.String(120), nullable=False, unique=True)
-    description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
-    status: Mapped[str] = mapped_column(sa.String(32), nullable=False, default="draft")
-    current_version_id: Mapped[Optional[int]] = mapped_column(sa.Integer, nullable=True)
-
-    agents: Mapped[List[Agent]] = relationship("Agent", back_populates="network")
-    versions: Mapped[List[NetworkVersion]] = relationship("NetworkVersion", back_populates="network")
-    network_tools: Mapped[List[NetworkTool]] = relationship("NetworkTool", back_populates="network")
-
-    __table_args__ = (
-        CheckConstraint("status in ('draft','published','archived')", name="ck_cfg_networks_status"),
-    )
-
-
-class Tool(Base):
+class Tool(SQLModel, table=True):
     __tablename__ = "cfg_tools"
 
-    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
-    key: Mapped[str] = mapped_column(sa.String(120), nullable=False)
-    display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
-    provider_type: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
-    params_schema: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
-    secret_ref: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    meta: Mapped[dict] = mapped_column("metadata", JSONType, nullable=False, default=dict)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(sa_column=sa.Column(sa.String(120), nullable=False))
+    display_name: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
+    provider_type: Optional[str] = Field(default=None, max_length=100)
+    params_schema: dict = Field(default_factory=dict, sa_column=Column(JSONType, nullable=False, default=dict))
+    secret_ref: Optional[str] = Field(default=None, max_length=200)
+    additional_data: dict = Field(default_factory=dict, sa_column=Column("additional_data", JSONType, nullable=False, default=dict))
 
-    __table_args__ = (
-        sa.Index("ux_cfg_tools_key_lower", text("lower(key)"), unique=True),
+    __table_args__ = (sa.Index("ux_cfg_tools_key_lower", text("lower(key)"), unique=True),)
+
+
+class Network(SQLModel, table=True):
+    __tablename__ = "cfg_networks"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=120, unique=True)
+    description: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
+    status: str = Field(default="draft", max_length=32)
+    current_version_id: Optional[int] = Field(default=None)
+
+    agents: List["Agent"] = Relationship(back_populates="network", sa_relationship_kwargs={"passive_deletes": True})
+    versions: List["NetworkVersion"] = Relationship(back_populates="network", sa_relationship_kwargs={"passive_deletes": True})
+    network_tools: List["NetworkTool"] = Relationship(back_populates="network", sa_relationship_kwargs={"passive_deletes": True})
+
+    __table_args__ = (sa.CheckConstraint("status in ('draft','published','archived')", name="ck_cfg_networks_status"),)
+
+
+class AgentToolLink(SQLModel, table=True):
+    __tablename__ = "cfg_agent_tools"
+    agent_id: Optional[int] = Field(
+        default=None,
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_agents.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
     )
-
-
-class NetworkTool(Base):
-    __tablename__ = "cfg_network_tools"
-
-    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
-    network_id: Mapped[int] = mapped_column(ForeignKey("cfg_networks.id", ondelete="CASCADE"), nullable=False)
-    source_tool_id: Mapped[int] = mapped_column(ForeignKey("cfg_tools.id", ondelete="RESTRICT"), nullable=False)
-
-    key: Mapped[str] = mapped_column(sa.String(120), nullable=False)
-    display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
-    provider_type: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
-    params_schema: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
-    secret_ref: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    meta: Mapped[dict] = mapped_column("metadata", JSONType, nullable=False, default=dict)
-
-    network: Mapped[Network] = relationship("Network", back_populates="network_tools")
-    source_tool: Mapped[Tool] = relationship("Tool")
-
-    __table_args__ = (
-        sa.Index(
-            "ux_cfg_network_tools_network_key_lower",
-            "network_id",
-            text("lower(key)"),
-            unique=True,
+    network_tool_id: Optional[int] = Field(
+        default=None,
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_network_tools.id", ondelete="CASCADE"),
+            primary_key=True,
         ),
     )
 
 
-class Agent(Base):
+class AgentRouteLink(SQLModel, table=True):
+    __tablename__ = "cfg_agent_routes"
+    from_agent_id: Optional[int] = Field(
+        default=None,
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_agents.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+    )
+    to_agent_id: Optional[int] = Field(
+        default=None,
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_agents.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+    )
+    __table_args__ = (sa.CheckConstraint("from_agent_id <> to_agent_id", name="ck_cfg_agent_routes_not_self"),)
+
+
+class Agent(SQLModel, table=True):
     __tablename__ = "cfg_agents"
 
-    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
-    network_id: Mapped[int] = mapped_column(ForeignKey("cfg_networks.id", ondelete="CASCADE"), nullable=False)
-    key: Mapped[str] = mapped_column(sa.String(120), nullable=False)
-    display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
-    allow_respond: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
-    is_default: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
-    meta: Mapped[dict] = mapped_column("metadata", JSONType, nullable=False, default=dict)
-
-    network: Mapped[Network] = relationship("Network", back_populates="agents")
-    equipped_tools: Mapped[List[NetworkTool]] = relationship(
-        "NetworkTool", secondary="cfg_agent_tools", backref="agents"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    network_id: int = Field(
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_networks.id", ondelete="CASCADE"),
+            nullable=False,
+        )
     )
-    allowed_routes: Mapped[List[Agent]] = relationship(
-        "Agent",
-        secondary="cfg_agent_routes",
-        primaryjoin="Agent.id==cfg_agent_routes.c.from_agent_id",
-        secondaryjoin="Agent.id==cfg_agent_routes.c.to_agent_id",
-        backref="routed_from",
-    )
+    key: str = Field(max_length=120)
+    display_name: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
+    allow_respond: bool = True
+    is_default: bool = False
+    additional_data: dict = Field(default_factory=dict, sa_column=Column("additional_data", JSONType, nullable=False, default=dict))
 
-    __table_args__ = (
-        sa.Index(
-            "ux_cfg_agents_network_key_lower",
-            "network_id",
-            text("lower(key)"),
-            unique=True,
+    network: "Network" = Relationship(back_populates="agents")
+    equipped_tools: List["NetworkTool"] = Relationship(link_model=AgentToolLink)
+    allowed_routes: list["Agent"] = Relationship(
+        link_model=AgentRouteLink,
+        sa_relationship_kwargs=dict(
+            primaryjoin="Agent.id==AgentRouteLink.from_agent_id",
+            secondaryjoin="Agent.id==AgentRouteLink.to_agent_id",
         ),
     )
 
-
-cfg_agent_tools = sa.Table(
-    "cfg_agent_tools",
-    Base.metadata,
-    sa.Column("agent_id", sa.Integer, sa.ForeignKey("cfg_agents.id", ondelete="CASCADE"), primary_key=True),
-    sa.Column("network_tool_id", sa.Integer, sa.ForeignKey("cfg_network_tools.id", ondelete="CASCADE"), primary_key=True),
-    UniqueConstraint("agent_id", "network_tool_id", name="uq_cfg_agent_tool"),
-)
+    __table_args__ = (sa.Index("ux_cfg_agents_network_key_lower", "network_id", text("lower(key)"), unique=True),)
 
 
-cfg_agent_routes = sa.Table(
-    "cfg_agent_routes",
-    Base.metadata,
-    sa.Column("from_agent_id", sa.Integer, sa.ForeignKey("cfg_agents.id", ondelete="CASCADE"), primary_key=True),
-    sa.Column("to_agent_id", sa.Integer, sa.ForeignKey("cfg_agents.id", ondelete="CASCADE"), primary_key=True),
-    UniqueConstraint("from_agent_id", "to_agent_id", name="uq_cfg_agent_route"),
-    CheckConstraint("from_agent_id <> to_agent_id", name="ck_cfg_agent_routes_not_self"),
-)
+class NetworkTool(SQLModel, table=True):
+    __tablename__ = "cfg_network_tools"
 
+    id: Optional[int] = Field(default=None, primary_key=True)
+    network_id: int = Field(
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_networks.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    source_tool_id: int = Field(
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_tools.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
 
-class NetworkVersion(Base):
-    __tablename__ = "cfg_network_versions"
+    key: str = Field(max_length=120)
+    display_name: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
+    provider_type: Optional[str] = Field(default=None, max_length=100)
+    params_schema: dict = Field(default_factory=dict, sa_column=Column(JSONType, nullable=False, default=dict))
+    secret_ref: Optional[str] = Field(default=None, max_length=200)
+    additional_data: dict = Field(default_factory=dict, sa_column=Column("additional_data", JSONType, nullable=False, default=dict))
 
-    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
-    network_id: Mapped[int] = mapped_column(ForeignKey("cfg_networks.id", ondelete="CASCADE"), nullable=False)
-    version: Mapped[int] = mapped_column(sa.Integer, nullable=False)
-    created_by: Mapped[Optional[str]] = mapped_column(sa.String(120), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
-    published_by: Mapped[Optional[str]] = mapped_column(sa.String(120), nullable=True)
-    published_at: Mapped[Optional[datetime]] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    notes: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
-
-    network: Mapped[Network] = relationship("Network", back_populates="versions")
+    network: "Network" = Relationship(back_populates="network_tools")
+    source_tool: Tool = Relationship()
 
     __table_args__ = (
-        UniqueConstraint("network_id", "version", name="uq_cfg_network_version"),
-        sa.Index("ix_cfg_network_versions_network_id", "network_id"),
+        sa.Index("ux_cfg_network_tools_network_key_lower", "network_id", text("lower(key)"), unique=True),
     )
 
 
-class CompiledSnapshot(Base):
+    # moved above NetworkTool to ensure relationship string resolution
+
+
+class NetworkVersion(SQLModel, table=True):
+    __tablename__ = "cfg_network_versions"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    network_id: int = Field(
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_networks.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    version: int
+    created_by: Optional[str] = Field(default=None, max_length=120)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": sa.func.now()})
+    published_by: Optional[str] = Field(default=None, max_length=120)
+    published_at: Optional[datetime] = Field(default=None)
+    notes: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
+
+    network: Network = Relationship(back_populates="versions")
+
+    __table_args__ = (sa.UniqueConstraint("network_id", "version", name="uq_cfg_network_version"),)
+
+
+class CompiledSnapshot(SQLModel, table=True):
     __tablename__ = "cfg_compiled_snapshots"
 
-    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
-    network_version_id: Mapped[int] = mapped_column(
-        ForeignKey("cfg_network_versions.id", ondelete="CASCADE"), nullable=False, unique=True
+    id: Optional[int] = Field(default=None, primary_key=True)
+    network_version_id: int = Field(
+        sa_column=sa.Column(
+            sa.Integer,
+            sa.ForeignKey("cfg_network_versions.id", ondelete="CASCADE"),
+            unique=True,
+            nullable=False,
+        )
     )
-    checksum: Mapped[Optional[str]] = mapped_column(sa.String(128), nullable=True)
-    compiled_graph: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
+    checksum: Optional[str] = Field(default=None, max_length=128)
+    compiled_graph: dict = Field(default_factory=dict, sa_column=Column(JSONType, nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": sa.func.now()})

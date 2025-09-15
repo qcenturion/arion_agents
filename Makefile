@@ -44,6 +44,8 @@ db-logs:
 db-init:
 	DATABASE_URL=$(DB_URL) PYTHONPATH=src $(PYTHON) -c "from arion_agents.db import init_db; init_db(); print('DB initialized')"
 
+
+
 seed-demo:
 	API_URL?=http://localhost:8000
 	API_URL=$(API_URL) $(PYTHON) tools/seed_demo.py

@@ -31,6 +31,6 @@ services:
       - db
     volumes:
       - ./.secrets:/app/.secrets:ro
-    command: sh -c "sleep 10 && python -c 'from arion_agents.db import init_db; init_db()' && python -m arion_agents api"
+    command: sh -c "python -c 'from arion_agents.db import init_db; init_db()' && python -m arion_agents api"
 volumes:
   db_data:
