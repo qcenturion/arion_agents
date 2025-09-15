@@ -49,9 +49,35 @@ class WorldTimeApiTool(BaseTool):
             return ToolRunOutput(ok=False, error=str(e))
 
 
+class SunApiTool(BaseTool):
+    """Fetch sunrise and sunset times from sunrise-sunset.org.
+
+    provider_type: 'http:sunapi'
+    agent params: lat, lng (optional, default to Malaga, Spain)
+    """
+
+    def run(self, payload: ToolRunInput) -> ToolRunOutput:
+        import requests
+
+        lat = payload.params.get("lat") or "36.7201600"
+        lng = payload.params.get("lng") or "-4.4203400"
+        url = f"https://api.sunrise-sunset.org/json?lat={lat}&lng={lng}"
+        print(f"SunApiTool requesting URL: {url}", flush=True)
+        try:
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            print(f"SunApiTool response: {data}", flush=True)
+            return ToolRunOutput(ok=True, result=data.get("results"))
+        except Exception as e:
+            print(f"SunApiTool failed: {e}", flush=True)
+            return ToolRunOutput(ok=False, error=str(e))
+
+
 PROVIDERS: Dict[str, Type[BaseTool]] = {
     "builtin:echo": EchoTool,
     "http:worldtimeapi": WorldTimeApiTool,
+    "http:sunapi": SunApiTool,
 }
 
 

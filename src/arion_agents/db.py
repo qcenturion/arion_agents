@@ -4,6 +4,11 @@ from typing import Iterator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.types import JSON as SAJSON
+try:
+    from sqlalchemy.dialects.postgresql import JSONB as PGJSONB  # type: ignore
+except Exception:  # pragma: no cover
+    PGJSONB = None  # type: ignore
 
 
 # Default to local Postgres for dev; override via DATABASE_URL
@@ -22,6 +27,13 @@ engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, **_engine_
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
 
 Base = declarative_base()
+
+# Expose a JSON type alias that is Postgres JSONB when available, otherwise generic JSON
+backend = engine.url.get_backend_name()
+if backend.startswith("postgres") and PGJSONB is not None:
+    JSONType = PGJSONB  # type: ignore
+else:  # sqlite / others
+    JSONType = SAJSON  # type: ignore
 
 
 @contextmanager

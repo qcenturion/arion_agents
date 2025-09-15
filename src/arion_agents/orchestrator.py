@@ -2,22 +2,25 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class UseToolAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: Literal["USE_TOOL"]
     tool_name: str
     tool_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RouteToAgentAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: Literal["ROUTE_TO_AGENT"]
     target_agent_name: str
     context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RespondAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: Literal["RESPOND"]
     payload: Any
 
@@ -26,6 +29,7 @@ Action = Union[UseToolAction, RouteToAgentAction, RespondAction]
 
 
 class Instruction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     reasoning: str
     action: Action
 
@@ -110,6 +114,24 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
                 # defaults
                 if (v or {}).get("default") is not None and k not in merged:
                     merged[k] = v.get("default")
+
+        # Optional JSON Schema validation for agent-visible params
+        try:
+            # If tool metadata includes a JSON Schema for agent params, validate here
+            from jsonschema import validate as _js_validate  # type: ignore
+            from jsonschema import ValidationError as _JSValidationError  # type: ignore
+            meta_schema = getattr(tspec, "metadata", None) or {}
+            agent_params_schema = None
+            if isinstance(meta_schema, dict):
+                agent_params_schema = meta_schema.get("agent_params_json_schema")
+            if agent_params_schema:
+                try:
+                    _js_validate(instance=params, schema=agent_params_schema)
+                except _JSValidationError as ve:  # pragma: no cover
+                    return OrchestratorResult(status="retry", error=f"tool_params do not match schema: {ve.message}")
+        except Exception:
+            # jsonschema not available or unexpected error; proceed with built-in validation
+            pass
 
         # Execute via registry
         try:

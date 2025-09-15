@@ -78,8 +78,10 @@
 - Constraints section: unchanged from current implementation.
 
 ## API
-- `/run` → call `run_loop()` with `{ network, agent_key?, user_message, version?, system_params?, max_steps? }`.
-- Add `debug=true` to include raw prompts and raw LLM JSON text per step.
+- `/run` → call `run_loop()` with `{ network, agent_key?, user_message, version?, system_params?, max_steps?, debug? }`.
+- `debug=true` includes raw resolved prompts and raw LLM JSON text per step.
+- `/prompts/resolve` → preview a fully resolved prompt for a given agent.
+- `/config/networks/{id}/snapshot_current` → fetch the compiled snapshot.
 
 ## Observability (OTel)
 - Root span per `/run`, child spans per step; nested spans for tool calls.
@@ -98,7 +100,7 @@
 
 ## Files & Changes
 
-Existing files to edit
+Existing files (updated)
 - `src/arion_agents/config_models.py`
   - Add `Agent.is_default: bool = False`
   - Optional: DB-level checks/indices if desired (primary enforcement at API level)
@@ -120,7 +122,7 @@ Existing files to edit
 - `src/arion_agents/llm.py`
   - Reuse `gemini_decide()` for the loop; no extra framework on hot path
 
-New files to add
+New files (added)
 - `src/arion_agents/logs/execution_log.py`
   - `ExecutionLog` with `append_agent_step()`, `append_tool_step()`, `to_list()`, `current_epoch_for(agent)`
   - `ToolExecutionLog` with `put(execution_id, full_payload)`, `get(execution_id)`,
@@ -140,3 +142,16 @@ Tests
   - Execution log content and tool full-output injection rules validated
 - `tests/test_snapshot_validation.py`
   - Fails on multiple defaults, no RESPOND agent, missing route target, unreachable RESPOND
+
+## Status Snapshot
+- Completed
+  - `Agent.is_default`, snapshot `default_agent_key`, publish-time validations
+  - Loop engine, execution/tool logs, prompt/context builders
+  - `/run` with `debug`, `/prompts/resolve`, snapshot fetch endpoint
+  - Real tool provider `http:worldtimeapi` and seed-time demo
+  - Dockerfile, compose stack, Makefile targets, DOCKER.md
+- Pending / Nice-to-have
+  - OTel span helpers and safe redaction utilities
+  - PATCH endpoint for network-local tool overrides
+  - Formalize graph validators in `graph/validate.py` module (currently inline)
+  - Per-agent/provider LLM config in snapshot (issue opened)

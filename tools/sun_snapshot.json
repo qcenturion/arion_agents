@@ -1,0 +1,80 @@
+{
+  "agents": [
+    {
+      "key": "triage",
+      "display_name": null,
+      "description": null,
+      "allow_respond": true,
+      "is_default": true,
+      "equipped_tools": [
+        "sun"
+      ],
+      "allowed_routes": [
+        "writer"
+      ],
+      "metadata": {},
+      "prompt": "You are triage. Tools:\n- sun: Get sunrise and sunset times for a given latitude and longitude.\nRoutes:\n- writer: \nWhen asked about the sun, USE the 'sun' tool first, then RESPOND."
+    },
+    {
+      "key": "writer",
+      "display_name": null,
+      "description": null,
+      "allow_respond": true,
+      "is_default": false,
+      "equipped_tools": [],
+      "allowed_routes": [],
+      "metadata": {},
+      "prompt": "You are writer. Tools:\n(none)\nRoutes:\n(none)\nRESPOND with the message including sunrise and sunset times."
+    }
+  ],
+  "tools": [
+    {
+      "key": "sun",
+      "description": "Get sunrise and sunset times for a given latitude and longitude.",
+      "provider_type": "http:sunapi",
+      "params_schema": {
+        "lat": {
+          "source": "agent",
+          "required": true
+        },
+        "lng": {
+          "source": "agent",
+          "required": true
+        }
+      },
+      "secret_ref": null,
+      "metadata": {
+        "agent_params_json_schema": {
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "lng": {
+              "type": [
+                "string",
+                "number"
+              ]
+            }
+          },
+          "required": [
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "default_agent_key": "triage",
+  "adjacency": [
+    {
+      "from": "triage",
+      "to": "writer"
+    }
+  ],
+  "policy": {}
+}

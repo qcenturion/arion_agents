@@ -1,0 +1,36 @@
+arion_agents_api  | INFO:     Started server process [9]
+arion_agents_api  | INFO:     Waiting for application startup.
+arion_agents_api  | INFO:     Application startup complete.
+arion_agents_api  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+arion_agents_api  | GEMINI_DECIDE_FALLBACK: additionalProperties is not supported in the Gemini API.
+arion_agents_api  | ERROR:root:Error in run_once
+arion_agents_api  | Traceback (most recent call last):
+arion_agents_api  |   File "/app/src/arion_agents/api.py", line 201, in run_once
+arion_agents_api  |     out = run_loop(
+arion_agents_api  |           ^^^^^^^^^
+arion_agents_api  |   File "/app/src/arion_agents/engine/loop.py", line 50, in run_loop
+arion_agents_api  |     decision = parsed or AgentDecision.model_validate_json(text)
+arion_agents_api  |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+arion_agents_api  |   File "/usr/local/lib/python3.12/site-packages/pydantic/main.py", line 746, in model_validate_json
+arion_agents_api  |     return cls.__pydantic_validator__.validate_json(
+arion_agents_api  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+arion_agents_api  | pydantic_core._pydantic_core.ValidationError: 1 validation error for AgentDecision
+arion_agents_api  |   Invalid JSON: expected value at line 1 column 1 [type=json_invalid, input_value='```json\n{"action": "USE..."lng": -4.42034}}}\n```', input_type=str]
+arion_agents_api  |     For further information visit https://errors.pydantic.dev/2.11/v/json_invalid
+arion_agents_api  | INFO:     142.251.10.95:40499 - "POST /run HTTP/1.1" 400 Bad Request
+arion_agents_api  | GEMINI_DECIDE_FALLBACK: additionalProperties is not supported in the Gemini API.
+arion_agents_api  | ERROR:root:Error in run_once
+arion_agents_api  | Traceback (most recent call last):
+arion_agents_api  |   File "/app/src/arion_agents/api.py", line 201, in run_once
+arion_agents_api  |     out = run_loop(
+arion_agents_api  |           ^^^^^^^^^
+arion_agents_api  |   File "/app/src/arion_agents/engine/loop.py", line 50, in run_loop
+arion_agents_api  |     decision = parsed or AgentDecision.model_validate_json(text)
+arion_agents_api  |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+arion_agents_api  |   File "/usr/local/lib/python3.12/site-packages/pydantic/main.py", line 746, in model_validate_json
+arion_agents_api  |     return cls.__pydantic_validator__.validate_json(
+arion_agents_api  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+arion_agents_api  | pydantic_core._pydantic_core.ValidationError: 1 validation error for AgentDecision
+arion_agents_api  |   Invalid JSON: expected value at line 1 column 1 [type=json_invalid, input_value='```json\n{"action": "USE..."lng": -4.42034}}}\n```', input_type=str]
+arion_agents_api  |     For further information visit https://errors.pydantic.dev/2.11/v/json_invalid
+arion_agents_api  | INFO:     142.251.10.95:41398 - "POST /run HTTP/1.1" 400 Bad Request

@@ -104,6 +104,26 @@ Invoke API
   - `curl -sS -X POST :8000/llm/complete -H 'content-type: application/json' -d '{"prompt":"Say hello"}'`
   - Expected: JSON with a `text` field containing the model reply
 
+## Local E2E (no Docker, no Postgres)
+- Purpose: Run a real end-to-end flow in-process for fast debugging. Only the config snapshot is file-based; the loop, prompts, LLM, and tools run for real.
+- Generate a demo snapshot (sun tool + 2 agents):
+  - `make snapshot-sun` (writes `tools/sun_snapshot.json`)
+- Run a single-shot end-to-end call with debug:
+  - `SNAPSHOT_FILE=tools/sun_snapshot.json PYTHONPATH=src .venv/bin/python - << 'PY'
+from fastapi.testclient import TestClient
+import json
+from arion_agents.api import app
+c = TestClient(app)
+resp = c.post('/run', json={'network':'unused','user_message':'When does the sun rise and set for lat 36.7201600 and lng -4.4203400?','debug': True})
+print(json.dumps(resp.json(), indent=2))
+PY`
+- Or create a timestamped report file with prompts, debug steps, execution_log, and tool_log:
+  - See `tools/e2e_local.py` or replicate the snippet above and write to `logs/e2e_run_<timestamp>.json`.
+
+Notes
+- When using `SNAPSHOT_FILE`, the API bypasses the DB only for snapshot loading; everything else (orchestrator loop, prompt assembly, LLM calls, tool providers, validation) is real.
+- For a purely offline run without hitting the LLM, use `make e2e-local` (stubs decisions) to validate the loop and logs.
+
 Structured output (Pydantic AI)
 - Draft an Instruction object from free text:
   - `curl -sS -X POST :8000/llm/draft-instruction -H 'content-type: application/json' -d '{"prompt":"Return a RESPOND instruction with payload {\"hello\":\"world\"} and reasoning \"done\""}'`

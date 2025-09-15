@@ -5,7 +5,7 @@ from typing import List, Optional
 
 import sqlalchemy as sa
 from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import JSONB
+from .db import JSONType
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -37,9 +37,9 @@ class Tool(Base):
     display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     provider_type: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
-    params_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    params_schema: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     secret_ref: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", JSONType, nullable=False, default=dict)
 
     __table_args__ = (
         sa.Index("ux_cfg_tools_key_lower", text("lower(key)"), unique=True),
@@ -57,9 +57,9 @@ class NetworkTool(Base):
     display_name: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     provider_type: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
-    params_schema: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    params_schema: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     secret_ref: Mapped[Optional[str]] = mapped_column(sa.String(200), nullable=True)
-    meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", JSONType, nullable=False, default=dict)
 
     network: Mapped[Network] = relationship("Network", back_populates="network_tools")
     source_tool: Mapped[Tool] = relationship("Tool")
@@ -84,7 +84,7 @@ class Agent(Base):
     description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     allow_respond: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
     is_default: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
-    meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column("metadata", JSONType, nullable=False, default=dict)
 
     network: Mapped[Network] = relationship("Network", back_populates="agents")
     equipped_tools: Mapped[List[NetworkTool]] = relationship(
@@ -155,5 +155,5 @@ class CompiledSnapshot(Base):
         ForeignKey("cfg_network_versions.id", ondelete="CASCADE"), nullable=False, unique=True
     )
     checksum: Mapped[Optional[str]] = mapped_column(sa.String(128), nullable=True)
-    compiled_graph: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    compiled_graph: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())

@@ -52,6 +52,19 @@ if _OTEL_AVAILABLE and os.getenv("OTEL_ENABLED", "true").lower() in {"1", "true"
         # Don’t fail app import if instrumentation errors out
         pass
 
+# Optional static snapshot (file-based) to bypass DB for fast local runs.
+# We load on demand each call, so changes to SNAPSHOT_FILE env are picked up.
+def _load_static_snapshot() -> dict | None:
+    path = os.getenv("SNAPSHOT_FILE")
+    if not path:
+        return None
+    try:
+        import json
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
 
 @app.get("/health")
 async def health() -> dict:
@@ -139,9 +152,9 @@ def _build_constraints_text(cfg) -> str:
         lines.append("Allowed routes (agent keys):")
         for r in cfg.allowed_routes:
             lines.append(f"- {r}")
-    lines.append("When using USE_TOOL, action_details must include tool_name and tool_params.")
-    lines.append("When routing, action_details must include target_agent_name.")
-    lines.append("When responding, put your payload in action_details.payload.")
+    lines.append("When using USE_TOOL, action_details must be an object with 'tool_name' (string) and 'tool_params' (object).")
+    lines.append("When using ROUTE_TO_AGENT, action_details must be an object with 'target_agent_name' (string) and 'context' (object).")
+    lines.append("When using RESPOND, action_details must be an object with 'payload' (object).")
     return "\n".join(lines)
 
 
@@ -164,32 +177,36 @@ async def run_once(payload: RunOnceRequest) -> dict:
     try:
         from arion_agents.engine.loop import run_loop
 
-        # Resolve default agent from snapshot if not provided
-        from sqlalchemy import select, func
-        from arion_agents.db import get_session
-        from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
+        # Resolve default agent from static snapshot or DB snapshot
+        static_graph = _load_static_snapshot()
+        if static_graph is not None:
+            graph = static_graph
+        else:
+            from sqlalchemy import select, func
+            from arion_agents.db import get_session
+            from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
 
-        with get_session() as db:
-            net = db.scalar(select(Network).where(func.lower(Network.name) == payload.network.strip().lower()))
-            if not net:
-                raise HTTPException(status_code=404, detail=f"Network '{payload.network}' not found")
-            if payload.version is not None:
-                ver = db.scalar(
-                    select(NetworkVersion).where(
-                        (NetworkVersion.network_id == net.id) & (NetworkVersion.version == payload.version)
+            with get_session() as db:
+                net = db.scalar(select(Network).where(func.lower(Network.name) == payload.network.strip().lower()))
+                if not net:
+                    raise HTTPException(status_code=404, detail=f"Network '{payload.network}' not found")
+                if payload.version is not None:
+                    ver = db.scalar(
+                        select(NetworkVersion).where(
+                            (NetworkVersion.network_id == net.id) & (NetworkVersion.version == payload.version)
+                        )
                     )
-                )
-                if not ver:
-                    raise HTTPException(status_code=404, detail=f"Version {payload.version} not found for network '{payload.network}'")
-                ver_id = ver.id
-            else:
-                ver_id = net.current_version_id
-            if not ver_id:
-                raise HTTPException(status_code=400, detail="No published version for network")
-            snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
-            if not snap:
-                raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
-            graph = snap.compiled_graph or {}
+                    if not ver:
+                        raise HTTPException(status_code=404, detail=f"Version {payload.version} not found for network '{payload.network}'")
+                    ver_id = ver.id
+                else:
+                    ver_id = net.current_version_id
+                if not ver_id:
+                    raise HTTPException(status_code=400, detail="No published version for network")
+                snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
+                if not snap:
+                    raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
+                graph = snap.compiled_graph or {}
 
         default_agent = payload.agent_key or graph.get("default_agent_key")
         if not default_agent:
@@ -210,70 +227,80 @@ async def run_once(payload: RunOnceRequest) -> dict:
     except HTTPException:
         raise
     except Exception as e:
+        import logging
+        logging.exception("Error in run_once")
         raise HTTPException(status_code=400, detail=str(e))
 
 
 def _build_run_config(network: str, agent_key: str, version: int | None, allow_respond: bool, system_params: dict):
-    from sqlalchemy import select, func
-    from arion_agents.db import get_session
-    from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
     from arion_agents.orchestrator import RunConfig
 
-    with get_session() as db:
-        net = db.scalar(select(Network).where(func.lower(Network.name) == network.strip().lower()))
-        if not net:
-            raise HTTPException(status_code=404, detail=f"Network '{network}' not found")
-        ver_id = None
-        if version is not None:
-            ver = db.scalar(
-                select(NetworkVersion).where(
-                    (NetworkVersion.network_id == net.id) & (NetworkVersion.version == version)
+    # Fast path: use static snapshot file if provided
+    static_graph = _load_static_snapshot()
+    if static_graph is not None:
+        graph = static_graph
+    else:
+        from sqlalchemy import select, func
+        from arion_agents.db import get_session
+        from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
+
+        with get_session() as db:
+            net = db.scalar(select(Network).where(func.lower(Network.name) == network.strip().lower()))
+            if not net:
+                raise HTTPException(status_code=404, detail=f"Network '{network}' not found")
+            ver_id = None
+            if version is not None:
+                ver = db.scalar(
+                    select(NetworkVersion).where(
+                        (NetworkVersion.network_id == net.id) & (NetworkVersion.version == version)
+                    )
                 )
-            )
-            if not ver:
-                raise HTTPException(status_code=404, detail=f"Version {version} not found for network '{network}'")
-            ver_id = ver.id
-        else:
-            ver_id = net.current_version_id
-        if not ver_id:
-            raise HTTPException(status_code=400, detail="No published version for network")
-        snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
-        if not snap:
-            raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
-        graph = snap.compiled_graph or {}
-        # Build config for the requested agent
-        agents = {a["key"].lower(): a for a in graph.get("agents", [])}
-        tools = {t["key"].lower(): t for t in graph.get("tools", [])}
-        a = agents.get(agent_key.strip().lower())
-        if not a:
-            raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not in snapshot")
-        equipped = list(a.get("equipped_tools", []))
-        routes = list(a.get("allowed_routes", []))
-        allow = bool(a.get("allow_respond", False)) and allow_respond
-        prompt = a.get("prompt")
-        # Build tools_map for current agent
-        tools_map = {}
-        for tk in equipped:
-            item = tools.get(str(tk).strip().lower())
-            if not item:
-                # tool not present in snapshot; skip
-                continue
-            tools_map[item["key"]] = {
-                "key": item["key"],
-                "provider_type": item.get("provider_type") or "",
-                "params_schema": item.get("params_schema") or {},
-                "secret_ref": item.get("secret_ref"),
-                "metadata": item.get("metadata") or {},
-            }
-        return RunConfig(
-            current_agent=a["key"],
-            equipped_tools=equipped,
-            tools_map=tools_map,
-            allowed_routes=routes,
-            allow_respond=allow,
-            system_params=system_params or {},
-            prompt=prompt,
-        )
+                if not ver:
+                    raise HTTPException(status_code=404, detail=f"Version {version} not found for network '{network}'")
+                ver_id = ver.id
+            else:
+                ver_id = net.current_version_id
+            if not ver_id:
+                raise HTTPException(status_code=400, detail="No published version for network")
+            snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
+            if not snap:
+                raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
+            graph = snap.compiled_graph or {}
+
+    # Build config for the requested agent
+    agents = {a["key"].lower(): a for a in graph.get("agents", [])}
+    tools = {t["key"].lower(): t for t in graph.get("tools", [])}
+    a = agents.get(agent_key.strip().lower())
+    if not a:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not in snapshot")
+    equipped = list(a.get("equipped_tools", []))
+    routes = list(a.get("allowed_routes", []))
+    allow = bool(a.get("allow_respond", False)) and allow_respond
+    prompt = a.get("prompt")
+    # Build tools_map for current agent
+    tools_map = {}
+    for tk in equipped:
+        item = tools.get(str(tk).strip().lower())
+        if not item:
+            # tool not present in snapshot; skip
+            continue
+        tools_map[item["key"]] = {
+            "key": item["key"],
+            "provider_type": item.get("provider_type") or "",
+            "params_schema": item.get("params_schema") or {},
+            "secret_ref": item.get("secret_ref"),
+            "metadata": item.get("metadata") or {},
+            "description": item.get("description") or None,
+        }
+    return RunConfig(
+        current_agent=a["key"],
+        equipped_tools=equipped,
+        tools_map=tools_map,
+        allowed_routes=routes,
+        allow_respond=allow,
+        system_params=system_params or {},
+        prompt=prompt,
+    )
 
 
 @app.post("/invoke")
@@ -320,7 +347,7 @@ async def resolve_prompt(payload: ResolvePromptRequest) -> dict:
     Uses current compiled base prompt + empty tool history + constraints.
     """
     try:
-        from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt
+        from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt, build_tool_definitions
         # Identify default agent if not provided
         from sqlalchemy import select, func
         from arion_agents.db import get_session
@@ -356,7 +383,8 @@ async def resolve_prompt(payload: ResolvePromptRequest) -> dict:
         cfg = _build_run_config(payload.network, agent_key, payload.version, True, {})
         constraints = build_constraints(cfg)
         context = build_context(payload.user_message, exec_log=[], full_tool_outputs=[])
-        prompt = build_prompt(cfg.prompt, context, constraints)
+        tool_defs = build_tool_definitions(cfg)
+        prompt = build_prompt(cfg.prompt, context, constraints, tool_defs)
         return {"agent_key": agent_key, "prompt": prompt}
     except HTTPException:
         raise

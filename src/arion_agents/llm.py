@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+import re
 
 
 class LLMNotConfigured(Exception):
@@ -72,34 +73,44 @@ def gemini_complete(prompt: str, model: Optional[str] = None) -> str:
             raise RuntimeError(f"Gemini completion failed: {e}")
 
 
-def gemini_decide(prompt: str, model: Optional[str] = None):
-    """Request a structured decision in JSON mode from Gemini.
+def _strip_code_fences(text: str) -> str:
+    m = re.search(r"```(?:json)?\n([\s\S]*?)\n```", text)
+    return m.group(1) if m else text
 
-    Returns a tuple (text, parsed) where parsed is the SDK-parsed object when available.
+
+def gemini_decide(prompt: str, model: Optional[str] = None):
+    """Structured decision in JSON mode without response_schema + robust parsing with one retry.
+
+    Returns a tuple (raw_text, parsed AgentDecision).
     """
     api_key, default_model = _require_gemini_config()
 
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-        from arion_agents.agent_decision import AgentDecision
+    from google import genai  # type: ignore
+    from google.genai import types  # type: ignore
+    from arion_agents.agent_decision import AgentDecision
 
-        client = genai.Client(api_key=api_key)
-        model_name = model or default_model
+    client = genai.Client(api_key=api_key)
+    model_name = model or default_model
+
+    def _call(p: str) -> str:
         resp = client.models.generate_content(
             model=model_name,
-            contents=prompt,
+            contents=p,
             config=types.GenerateContentConfig(
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
                 response_mime_type="application/json",
-                response_schema=AgentDecision,
             ),
         )
-        # Some SDK versions expose .parsed when using response_schema
-        parsed = getattr(resp, "parsed", None)
-        text = getattr(resp, "text", "")
+        return getattr(resp, "text", "") or ""
+
+    text = _call(prompt)
+    try:
+        clean = _strip_code_fences(text)
+        parsed = AgentDecision.model_validate_json(clean)
         return text, parsed
-    except Exception:
-        # Fallback to older SDK: just run completion and return text
-        t = gemini_complete(prompt, model)
-        return t, None
+    except Exception as e1:
+        retry_prompt = f"{prompt}\n\nIMPORTANT: Return only raw JSON (no markdown, no backticks), nothing else."
+        text2 = _call(retry_prompt)
+        clean2 = _strip_code_fences(text2)
+        parsed2 = AgentDecision.model_validate_json(clean2)
+        return text2, parsed2

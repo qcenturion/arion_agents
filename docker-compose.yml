@@ -17,6 +17,20 @@ services:
       retries: 30
     volumes:
       - db_data:/var/lib/postgresql/data
+  api:
+    build: .
+    container_name: arion_agents_api
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/arion_agents
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - ./.secrets:/app/.secrets:ro
+    command: sh -c "sleep 10 && python -c 'from arion_agents.db import init_db; init_db()' && python -m arion_agents api"
 volumes:
   db_data:
-

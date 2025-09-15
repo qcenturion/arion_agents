@@ -166,7 +166,17 @@ def create_tool(payload: GlobalToolCreate, db: Session = Depends(get_db_dep)):
     )
     db.add(t)
     db.flush()
-    return t
+    db.refresh(t)
+    return GlobalToolOut(
+        id=t.id,
+        key=t.key,
+        display_name=t.display_name,
+        description=t.description,
+        provider_type=t.provider_type,
+        params_schema=t.params_schema,
+        secret_ref=t.secret_ref,
+        metadata=t.meta,
+    )
 
 
 @router.post("/networks", response_model=NetworkOut, status_code=status.HTTP_201_CREATED)
@@ -183,6 +193,25 @@ def create_network(payload: NetworkCreate, db: Session = Depends(get_db_dep)):
 def list_networks(db: Session = Depends(get_db_dep)):
     nets = list(db.scalars(select(Network)).all())
     return [NetworkOut(id=n.id, name=n.name, description=n.description, status=n.status, current_version_id=n.current_version_id) for n in nets]
+
+
+@router.delete("/networks/{network_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_network(network_id: int, db: Session = Depends(get_db_dep)):
+    net = db.get(Network, network_id)
+    if not net:
+        raise HTTPException(status_code=404, detail="network not found")
+
+    # Explicitly delete agents and network tools to be safe
+    for agent in net.agents:
+        db.delete(agent)
+    for tool in net.network_tools:
+        db.delete(tool)
+    db.flush()
+
+    db.delete(net)
+    db.flush()
+
+
 
 
 @router.post("/networks/{network_id}/tools", response_model=List[str])
@@ -301,6 +330,16 @@ def get_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_dep))
     return _agent_out(a)
 
 
+@router.delete("/networks/{network_id}/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_dep)):
+    a = db.get(Agent, agent_id)
+    if not a or a.network_id != network_id:
+        raise HTTPException(status_code=404, detail="agent not found")
+    db.delete(a)
+    db.flush()
+
+
+
 @router.put("/networks/{network_id}/agents/{agent_id}/tools", response_model=AgentOut)
 def set_agent_tools(network_id: int, agent_id: int, payload: SetTools, db: Session = Depends(get_db_dep)):
     a = db.get(Agent, agent_id)
@@ -400,7 +439,7 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
                 "key": t.key,
                 "description": t.description,
                 "provider_type": t.provider_type,
-                "params_schema": t.params_schema,
+                "params_schema": t.params_schema or {},
                 "secret_ref": t.secret_ref,
                 "metadata": t.meta or {},
             }

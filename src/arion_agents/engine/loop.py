@@ -4,7 +4,7 @@ from typing import Any, Callable, Dict, Optional
 
 from arion_agents.agent_decision import AgentDecision, decision_to_instruction
 from arion_agents.logs.execution_log import ExecutionLog, ToolExecutionLog
-from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt
+from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt, build_tool_definitions
 from arion_agents.orchestrator import RunConfig, execute_instruction
 from arion_agents.llm import gemini_decide
 
@@ -42,8 +42,9 @@ def run_loop(
         ]
 
         constraints = build_constraints(cfg)
+        tool_defs = build_tool_definitions(cfg)
         context = build_context(user_message if step == 0 else "(continued)", exec_log.to_list(), full_tool_outputs)
-        prompt = build_prompt(cfg.prompt, context, constraints)
+        prompt = build_prompt(cfg.prompt, context, constraints, tool_defs)
 
         text, parsed = decide(prompt, model)
         decision = parsed or AgentDecision.model_validate_json(text)
@@ -58,14 +59,20 @@ def run_loop(
 
         instr = decision_to_instruction(decision, cfg)
         res = execute_instruction(instr, cfg)
+        print(f"--- STEP {step} RESULT ---")
+        print(res)
+        print("--- END RESULT ---")
 
         if instr.action.type == "RESPOND":
-            return {
+            out = {
                 "final": res.model_dump(),
                 "execution_log": exec_log.to_list(),
                 "tool_log_keys": list(tool_log.store.keys()),
                 "debug": debug_steps if debug else None,
             }
+            if debug:
+                out["tool_log"] = tool_log.store
+            return out
         elif instr.action.type == "USE_TOOL":
             # res.response structure includes tool, params, result, duration_ms
             r = res.response or {}
@@ -92,20 +99,25 @@ def run_loop(
             current_agent = instr.action.target_agent_name
         else:
             # Unknown -> bail
-            return {
+            out = {
                 "final": res.model_dump(),
                 "execution_log": exec_log.to_list(),
                 "tool_log_keys": list(tool_log.store.keys()),
                 "debug": debug_steps if debug else None,
             }
+            if debug:
+                out["tool_log"] = tool_log.store
+            return out
 
         step += 1
 
     # Guardrail exceeded
-    return {
+    out = {
         "final": {"status": "error", "error": "max_steps_exceeded"},
         "execution_log": exec_log.to_list(),
         "tool_log_keys": list(tool_log.store.keys()),
         "debug": debug_steps if debug else None,
     }
-
+    if debug:
+        out["tool_log"] = tool_log.store
+    return out
