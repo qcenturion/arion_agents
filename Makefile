@@ -15,7 +15,7 @@ install: venv
 	$(PIP) install -r requirements.txt
 
 test:
-	PYTHONPATH=src DATABASE_URL?=postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents $(PYTEST) -q
+	DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents} PYTHONPATH=src $(PYTEST) -q
 
 lint:
 	$(RUFF) check src tests
@@ -63,18 +63,18 @@ snapshot-sun:
 
 e2e-snapshot:
 	SNAPSHOT_FILE=tools/sun_snapshot.json PYTHONPATH=src $(PYTHON) - << 'PY'
-from fastapi.testclient import TestClient
-import json
-from arion_agents.api import app
+	from fastapi.testclient import TestClient
+	import json
+	from arion_agents.api import app
 
-c = TestClient(app)
-out = c.post('/run', json={
-  'network':'unused',
-  'user_message':'When does the sun rise and set for lat 36.7201600 and lng -4.4203400?',
-  'debug': True
-}).json()
-print(json.dumps(out, indent=2))
-PY
+	c = TestClient(app)
+	out = c.post('/run', json={
+	  'network':'unused',
+	  'user_message':'When does the sun rise and set for lat 36.7201600 and lng -4.4203400?',
+	  'debug': True
+	}).json()
+	print(json.dumps(out, indent=2))
+	PY
 
 compose-build:
 	docker-compose build
