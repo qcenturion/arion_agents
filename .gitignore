@@ -71,3 +71,6 @@ venv.bak/
 # Local secrets and env overrides
 .env.local
 .secrets/
+logs/
+local_tests/
+*.db
