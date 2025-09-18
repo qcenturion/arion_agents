@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
+import logging
 
 from arion_agents.agent_decision import AgentDecision, decision_to_instruction
 from arion_agents.logs.execution_log import ExecutionLog, ToolExecutionLog
-from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt, build_tool_definitions
+from arion_agents.prompts.context_builder import (
+    build_constraints,
+    build_context,
+    build_prompt,
+    build_tool_definitions,
+    build_route_definitions,
+)
 from arion_agents.orchestrator import RunConfig, execute_instruction
 from arion_agents.llm import gemini_decide
 
@@ -22,6 +29,7 @@ def run_loop(
     decide_fn: Optional[DecideFn] = None,
     debug: bool = False,
 ) -> Dict[str, Any]:
+    logger = logging.getLogger("arion_agents.engine.loop")
     decide = decide_fn or (lambda prompt, m: gemini_decide(prompt, m))
 
     current_agent = default_agent_key
@@ -43,21 +51,46 @@ def run_loop(
 
         constraints = build_constraints(cfg)
         tool_defs = build_tool_definitions(cfg)
-        context = build_context(user_message if step == 0 else "(continued)", exec_log.to_list(), full_tool_outputs)
-        prompt = build_prompt(cfg.prompt, context, constraints, tool_defs)
+        route_defs = build_route_definitions(cfg)
+        # Always include the original user message for every agent/step so
+        # routed agents see the full request context instead of a placeholder.
+        context = build_context(user_message, exec_log.to_list(), full_tool_outputs)
+        prompt = build_prompt(cfg, cfg.prompt, context, constraints, tool_defs, route_defs)
+
+        # Log prompt when debugging
+        if debug:
+            try:
+                logger.debug("STEP %s agent=%s LLM request prompt:\n%s", step, current_agent, prompt)
+            except Exception:
+                pass
 
         text, parsed = decide(prompt, model)
         decision = parsed or AgentDecision.model_validate_json(text)
         exec_log.append_agent_step(
             step=step,
             agent_key=current_agent,
-            user_input_preview=user_message if step == 0 else "(continued)",
+            # Mirror the context behavior: always show the original message
+            user_input_preview=user_message,
             decision_preview=decision.model_dump(),
         )
         if debug:
+            try:
+                logger.debug("STEP %s agent=%s LLM raw response:\n%s", step, current_agent, text)
+            except Exception:
+                pass
             debug_steps.append({"agent": current_agent, "prompt": prompt, "raw": text})
 
         instr = decision_to_instruction(decision, cfg)
+        if debug:
+            try:
+                logger.debug(
+                    "STEP %s agent=%s decision -> action=%s",
+                    step,
+                    current_agent,
+                    getattr(instr.action, "type", "<unknown>"),
+                )
+            except Exception:
+                pass
         res = execute_instruction(instr, cfg)
         print(f"--- STEP {step} RESULT ---")
         print(res)
@@ -76,22 +109,33 @@ def run_loop(
         elif instr.action.type == "USE_TOOL":
             # res.response structure includes tool, params, result, duration_ms
             r = res.response or {}
+            attempted_tool = getattr(getattr(instr, "action", None), "tool_name", None)
+            tool_key = r.get("tool") or attempted_tool
+            params_for_log = r.get("params") or (
+                getattr(getattr(instr, "action", None), "tool_params", {}) if res.status != "ok" else {}
+            )
+            full_result = r.get("result")
+            if res.status != "ok" and full_result is None:
+                # Preserve the error so downstream prompts can see what failed
+                full_result = {"error": res.error}
+            duration_ms = int(r.get("duration_ms") or 0)
+
             execution_id = tool_log.put(
                 agent_key=current_agent,
-                tool_key=r.get("tool"),
-                merged_params=r.get("params") or {},
-                full_result=r.get("result"),
-                duration_ms=int(r.get("duration_ms") or 0),
+                tool_key=tool_key,
+                merged_params=params_for_log or {},
+                full_result=full_result,
+                duration_ms=duration_ms,
             )
             exec_log.append_tool_step(
                 step=step + 1,
                 agent_key=current_agent,
-                tool_key=r.get("tool"),
+                tool_key=tool_key or "",
                 execution_id=execution_id,
-                request_preview=str(r.get("params")),
-                response_preview=str(r.get("result")),
+                request_preview=str(params_for_log or {}),
+                response_preview=str(full_result),
                 status=res.status,
-                duration_ms=int(r.get("duration_ms") or 0),
+                duration_ms=duration_ms,
             )
             # Stay with same agent
         elif instr.action.type == "ROUTE_TO_AGENT":

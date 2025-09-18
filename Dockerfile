@@ -5,8 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app/src \
-    OTEL_ENABLED=false
+    PYTHONPATH=/app/src
 
 WORKDIR /app
 
@@ -26,4 +25,3 @@ EXPOSE 8000
 
 # Initialize DB schema then start API
 CMD sh -c "python -c 'from arion_agents.db import init_db; init_db(); print(\"DB initialized\")' && python -m arion_agents api"
-

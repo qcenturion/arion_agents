@@ -1,0 +1,171 @@
+{
+  "agents": [
+    {
+      "key": "triage",
+      "display_name": "Triage",
+      "description": null,
+      "allow_respond": false,
+      "is_default": true,
+      "equipped_tools": [],
+      "allowed_routes": [
+        "location_details"
+      ],
+      "metadata": {},
+      "prompt": "You are part of an AI assistant network. Your goal is to find the correct specialist agent to route the user's request to.\nRead the user request, compare against agent goals, and ROUTE_TO_AGENT with the most suitable target."
+    },
+    {
+      "key": "location_details",
+      "display_name": "Location Details Agent",
+      "description": null,
+      "allow_respond": true,
+      "is_default": false,
+      "equipped_tools": [
+        "sun",
+        "geonames"
+      ],
+      "allowed_routes": [],
+      "metadata": {},
+      "prompt": "You are a location details agent. Goal: provide users with requested details using the available tools.\nFollow the ReAct pattern: Think -> Act (USE_TOOL) -> Observe -> (repeat as needed) -> Respond.\nSome queries may require multiple tool calls (e.g., geocoding then a sun query).\nAfter each tool call, the conversation will be routed back to you with the tool response; decide next steps."
+    }
+  ],
+  "tools": [
+    {
+      "key": "sun",
+      "description": "Get sunrise and sunset times for a given latitude and longitude.",
+      "provider_type": "http:request",
+      "params_schema": {
+        "lat": {
+          "source": "agent",
+          "required": true
+        },
+        "lng": {
+          "source": "agent",
+          "required": true
+        }
+      },
+      "secret_ref": null,
+      "metadata": {
+        "http": {
+          "base_url": "https://api.sunrise-sunset.org",
+          "path": "/json",
+          "method": "GET",
+          "query": {
+            "lat": {
+              "source": "agent"
+            },
+            "lng": {
+              "source": "agent"
+            }
+          },
+          "response": {
+            "unwrap": "results"
+          }
+        },
+        "agent_params_json_schema": {
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "lng": {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          },
+          "required": [
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "key": "geonames",
+      "description": "Geocode a place name to latitude/longitude via GeoNames.",
+      "provider_type": "http:request",
+      "params_schema": {
+        "q": {
+          "source": "agent",
+          "required": true
+        },
+        "username": {
+          "source": "system",
+          "required": true
+        },
+        "maxRows": {
+          "source": "agent",
+          "required": false,
+          "default": 10
+        },
+        "featureClass": {
+          "source": "agent",
+          "required": false
+        }
+      },
+      "secret_ref": null,
+      "metadata": {
+        "http": {
+          "base_url": "http://api.geonames.org",
+          "path": "/searchJSON",
+          "method": "GET",
+          "query": {
+            "q": {
+              "source": "agent"
+            },
+            "username": {
+              "source": "system"
+            },
+            "maxRows": {
+              "source": "agent",
+              "default": 10
+            },
+            "featureClass": {
+              "source": "agent"
+            }
+          },
+          "response": {
+            "keys": [
+              "totalResultsCount",
+              "geonames"
+            ]
+          }
+        },
+        "agent_params_json_schema": {
+          "type": "object",
+          "properties": {
+            "q": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxRows": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 10
+            },
+            "featureClass": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "q"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "default_agent_key": "triage",
+  "adjacency": [
+    {
+      "from": "triage",
+      "to": "location_details"
+    }
+  ],
+  "policy": {}
+}

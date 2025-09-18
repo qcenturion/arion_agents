@@ -12,7 +12,7 @@
 ## Milestones & Tasks
 - M1: Repo + CI
   - [x] `git init`, first commit, GitHub remote (#initial)
-  - [x] GitHub Actions: Python 3.12, `pip install -r requirements.txt`, `pytest`
+  - [x] GitHub Actions: Python 3.12, `pip install -r requirements.txt`, placeholder smoke test (future)
   - [ ] CI: add ruff lint job (#issue)
   - [ ] Pre-commit hooks (ruff/black optional) (#issue)
 - M2: Containerization

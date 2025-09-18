@@ -22,8 +22,6 @@ services:
     container_name: arion_agents_api
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/arion_agents
-      OTEL_ENABLED: ${OTEL_ENABLED:-false}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
     ports:
       - "8000:8000"

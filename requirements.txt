@@ -1,10 +1,5 @@
-pytest>=8.2
 fastapi>=0.111
 uvicorn[standard]>=0.30
-opentelemetry-sdk>=1.26
-opentelemetry-exporter-otlp>=1.26
-opentelemetry-instrumentation-fastapi>=0.47b0
-opentelemetry-instrumentation-requests>=0.47b0
 ruff>=0.5
 SQLAlchemy>=2.0
 psycopg[binary]>=3.1

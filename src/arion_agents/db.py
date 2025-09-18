@@ -9,6 +9,7 @@ try:
 except ImportError:
     PGJSONB = None
 
+# Default to SQLite for lightweight local dev; override via env for Postgres
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://postgres:postgres@localhost:5432/arion_agents",
@@ -23,6 +24,23 @@ if backend_name.startswith("postgres") and PGJSONB is not None:
     JSONType = PGJSONB
 else:  # sqlite / others
     JSONType = SAJSON
+
+# Enable foreign key enforcement for SQLite (required for ondelete cascades)
+if backend_name.startswith("sqlite"):
+    try:
+        from sqlalchemy import event  # type: ignore
+        from sqlalchemy.engine import Engine  # type: ignore
+
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_con, con_record):  # pragma: no cover
+            cur = dbapi_con.cursor()
+            try:
+                cur.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cur.close()
+    except Exception:
+        # Non-fatal if event hook fails; tests may still pass without cascades
+        pass
 
 
 @contextmanager

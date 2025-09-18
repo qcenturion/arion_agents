@@ -1,69 +1,63 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException
-from pydantic import BaseModel
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, model_validator
+import logging
+from logging.handlers import RotatingFileHandler
+from arion_agents.prompts.context_builder import (
+    build_constraints,
+    build_context,
+    build_prompt,
+    build_tool_definitions,
+    build_route_definitions,
+)
 
-# OpenTelemetry is optional at import time. We lazy-import and no-op if missing.
-_OTEL_AVAILABLE = True
-try:  # defer imports so IDEs/tests don’t break if OTel isn’t installed yet
-    from opentelemetry import trace  # type: ignore
-    from opentelemetry.sdk.resources import Resource  # type: ignore
-    from opentelemetry.sdk.trace import TracerProvider  # type: ignore
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore
-        OTLPSpanExporter,
+from arion_agents.runtime_models import CompiledGraph
+
+# Basic logging config; level via LOG_LEVEL (default INFO)
+_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+try:
+    logging.basicConfig(
+        level=getattr(logging, _LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    from opentelemetry.instrumentation.fastapi import (  # type: ignore
-        FastAPIInstrumentor,
-    )
-except Exception:  # pragma: no cover
-    _OTEL_AVAILABLE = False
+except Exception:
+    pass
 
 
-def _format_trace_id(trace_id: int) -> str:
-    return f"{trace_id:032x}"
+def _project_root() -> Path:
+    # src/arion_agents/api.py -> repo_root/arion_agents
+    return Path(__file__).resolve().parents[2]
 
 
-def setup_tracing() -> None:
-    if not _OTEL_AVAILABLE:
-        return
-    if os.getenv("OTEL_ENABLED", "true").lower() not in {"1", "true", "yes"}:
-        return
-
-    service_name = os.getenv("OTEL_SERVICE_NAME", "arion_agents_api")
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-
-    resource = Resource.create({"service.name": service_name})
-    provider = TracerProvider(resource=resource)
-
-    # Use insecure=True for local dev endpoints over http
-    insecure = endpoint.startswith("http://")
-    exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
-    processor = BatchSpanProcessor(exporter)
-    provider.add_span_processor(processor)
-    trace.set_tracer_provider(provider)
-
-
-setup_tracing()
-app = FastAPI(title="arion_agents API")
-if _OTEL_AVAILABLE and os.getenv("OTEL_ENABLED", "true").lower() in {"1", "true", "yes"}:
+def _setup_file_logging() -> None:
     try:
-        FastAPIInstrumentor.instrument_app(app)
+        root = logging.getLogger()
+        logs_dir = _project_root() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = (logs_dir / "server.log").resolve()
+        # Avoid duplicate handlers on reload
+        existing = [getattr(h, "baseFilename", None) for h in root.handlers]
+        if str(log_path) not in (str(p) for p in existing if p):
+            handler = RotatingFileHandler(
+                log_path, maxBytes=5 * 1024 * 1024, backupCount=3
+            )
+            handler.setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+            )
+            root.addHandler(handler)
     except Exception:
-        # Don’t fail app import if instrumentation errors out
+        # Never crash the app because of logging setup
         pass
 
-# Optional static snapshot (file-based) to bypass DB for fast local runs.
-# We load on demand each call, so changes to SNAPSHOT_FILE env are picked up.
-def _load_static_snapshot() -> dict | None:
-    path = os.getenv("SNAPSHOT_FILE")
-    if not path:
-        return None
-    try:
-        import json
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+
+_setup_file_logging()
+
+app = FastAPI(title="arion_agents API")
 
 
 @app.get("/health")
@@ -77,7 +71,7 @@ class InvokeRequest(BaseModel):
     agent_key: str
     version: int | None = None
     allow_respond: bool = True
-    system_params: dict = {}
+    system_params: dict = Field(default_factory=dict)
 
 
 class LLMCompleteRequest(BaseModel):
@@ -92,10 +86,13 @@ async def llm_complete(payload: LLMCompleteRequest) -> dict:
     Requires env var GEMINI_API_KEY. Optional GEMINI_MODEL or request.model.
     """
     try:
-        from arion_agents.llm import gemini_complete, LLMNotConfigured
+        from arion_agents.llm import gemini_complete
 
         text = gemini_complete(payload.prompt, payload.model)
-        return {"model": payload.model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash"), "text": text}
+        return {
+            "model": payload.model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            "text": text,
+        }
     except Exception as e:  # Catch config and runtime errors
         msg = str(e)
         raise HTTPException(status_code=400, detail=msg)
@@ -135,7 +132,9 @@ async def draft_instruction(payload: DraftInstructionRequest) -> dict:
 
 def _build_constraints_text(cfg) -> str:
     lines = []
-    lines.append("You MUST respond as JSON with fields: action (USE_TOOL|ROUTE_TO_AGENT|RESPOND), action_reasoning (string), action_details (object).")
+    lines.append(
+        "You MUST respond as JSON with fields: action (USE_TOOL|ROUTE_TO_AGENT|RESPOND), action_reasoning (string), action_details (object)."
+    )
     if cfg.equipped_tools:
         lines.append("Allowed tools and agent-provided params:")
         for k in cfg.equipped_tools:
@@ -146,26 +145,43 @@ def _build_constraints_text(cfg) -> str:
             params_schema = getattr(ts, "params_schema", None)
             if params_schema is None and isinstance(ts, dict):
                 params_schema = ts.get("params_schema")
-            ps = [name for name, spec in (params_schema or {}).items() if (spec or {}).get("source", "agent") == "agent"]
+            ps = [
+                name
+                for name, spec in (params_schema or {}).items()
+                if (spec or {}).get("source", "agent") == "agent"
+            ]
             lines.append(f"- {k}: params={ps}")
     if cfg.allowed_routes:
         lines.append("Allowed routes (agent keys):")
         for r in cfg.allowed_routes:
             lines.append(f"- {r}")
-    lines.append("When using USE_TOOL, action_details must be an object with 'tool_name' (string) and 'tool_params' (object).")
-    lines.append("When using ROUTE_TO_AGENT, action_details must be an object with 'target_agent_name' (string) and 'context' (object).")
-    lines.append("When using RESPOND, action_details must be an object with 'payload' (object).")
+    lines.append(
+        "When using USE_TOOL, action_details must be an object with 'tool_name' (string) and 'tool_params' (object)."
+    )
+    lines.append(
+        "When using ROUTE_TO_AGENT, action_details must be an object with 'target_agent_name' (string) and 'context' (object)."
+    )
+    lines.append(
+        "When using RESPOND, action_details must be an object with 'payload' (object)."
+    )
     return "\n".join(lines)
 
 
 class RunOnceRequest(BaseModel):
-    network: str
+    network: str | None = None
     agent_key: str | None = None
     user_message: str
     version: int | None = None
-    system_params: dict = {}
+    system_params: dict = Field(default_factory=dict)
     model: str | None = None
     debug: bool = False
+    snapshot: CompiledGraph | None = None
+
+    @model_validator(mode="after")
+    def _require_target(cls, data: "RunOnceRequest"):
+        if (data.network is None) == (data.snapshot is None):
+            raise ValueError("Provide exactly one of 'network' or 'snapshot'")
+        return data
 
 
 @app.post("/run")
@@ -174,46 +190,31 @@ async def run_once(payload: RunOnceRequest) -> dict:
 
     Uses compiled prompt + constraints; enforces structured JSON via google-genai JSON mode.
     """
+    # Per-run log record
+    run_started = time.time()
+    run_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    run_record = {"request": payload.model_dump(), "started_at_utc": run_ts}
+    out: dict | None = None
     try:
         from arion_agents.engine.loop import run_loop
 
-        # Resolve default agent from static snapshot or DB snapshot
-        static_graph = _load_static_snapshot()
-        if static_graph is not None:
-            graph = static_graph
+        if payload.snapshot is not None:
+            graph = payload.snapshot.as_dict()
         else:
-            from sqlalchemy import select, func
-            from arion_agents.db import get_session
-            from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
-
-            with get_session() as db:
-                net = db.scalar(select(Network).where(func.lower(Network.name) == payload.network.strip().lower()))
-                if not net:
-                    raise HTTPException(status_code=404, detail=f"Network '{payload.network}' not found")
-                if payload.version is not None:
-                    ver = db.scalar(
-                        select(NetworkVersion).where(
-                            (NetworkVersion.network_id == net.id) & (NetworkVersion.version == payload.version)
-                        )
-                    )
-                    if not ver:
-                        raise HTTPException(status_code=404, detail=f"Version {payload.version} not found for network '{payload.network}'")
-                    ver_id = ver.id
-                else:
-                    ver_id = net.current_version_id
-                if not ver_id:
-                    raise HTTPException(status_code=400, detail="No published version for network")
-                snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
-                if not snap:
-                    raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
-                graph = snap.compiled_graph or {}
+            assert payload.network is not None  # validated upstream
+            graph = _load_graph_from_db(payload.network, payload.version)
 
         default_agent = payload.agent_key or graph.get("default_agent_key")
         if not default_agent:
-            raise HTTPException(status_code=400, detail="No default agent in snapshot and no agent_key provided")
+            raise HTTPException(
+                status_code=400,
+                detail="No default agent in snapshot and no agent_key provided",
+            )
 
         def _get_cfg(agent_key: str):
-            return _build_run_config(payload.network, agent_key, payload.version, True, payload.system_params)
+            return _build_run_config_from_graph(
+                graph, agent_key, True, payload.system_params
+            )
 
         out = run_loop(
             _get_cfg,
@@ -228,61 +229,95 @@ async def run_once(payload: RunOnceRequest) -> dict:
         raise
     except Exception as e:
         import logging
+
         logging.exception("Error in run_once")
+        run_record["error"] = str(e)
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            runs_dir = _project_root() / "logs" / "runs"
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            run_record["response"] = out
+            run_record["duration_ms"] = int((time.time() - run_started) * 1000)
+            # Use milliseconds to avoid collisions
+            ms = int(run_started * 1000)
+            fname = f"run_{run_ts}_{ms}.json"
+            with open(runs_dir / fname, "w", encoding="utf-8") as f:
+                json.dump(run_record, f, indent=2)
+        except Exception:
+            pass
 
 
-def _build_run_config(network: str, agent_key: str, version: int | None, allow_respond: bool, system_params: dict):
+def _load_graph_from_db(network: str, version: int | None) -> dict:
+    if not network:
+        raise HTTPException(status_code=400, detail="Network name is required")
+
+    from sqlalchemy import select, func
+    from arion_agents.db import get_session
+    from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
+
+    with get_session() as db:
+        net = db.scalar(
+            select(Network).where(func.lower(Network.name) == network.strip().lower())
+        )
+        if not net:
+            raise HTTPException(
+                status_code=404, detail=f"Network '{network}' not found"
+            )
+        if version is not None:
+            ver = db.scalar(
+                select(NetworkVersion).where(
+                    (NetworkVersion.network_id == net.id)
+                    & (NetworkVersion.version == version)
+                )
+            )
+            if not ver:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Version {version} not found for network '{network}'",
+                )
+            ver_id = ver.id
+        else:
+            ver_id = net.current_version_id
+        if not ver_id:
+            raise HTTPException(
+                status_code=400, detail="No published version for network"
+            )
+        snap = db.scalar(
+            select(CompiledSnapshot).where(
+                CompiledSnapshot.network_version_id == ver_id
+            )
+        )
+        if not snap:
+            raise HTTPException(
+                status_code=500, detail="Compiled snapshot missing for version"
+            )
+        return snap.compiled_graph or {}
+
+
+def _build_run_config_from_graph(
+    graph: dict, agent_key: str, allow_respond: bool, system_params: dict
+):
     from arion_agents.orchestrator import RunConfig
 
-    # Fast path: use static snapshot file if provided
-    static_graph = _load_static_snapshot()
-    if static_graph is not None:
-        graph = static_graph
-    else:
-        from sqlalchemy import select, func
-        from arion_agents.db import get_session
-        from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
-
-        with get_session() as db:
-            net = db.scalar(select(Network).where(func.lower(Network.name) == network.strip().lower()))
-            if not net:
-                raise HTTPException(status_code=404, detail=f"Network '{network}' not found")
-            ver_id = None
-            if version is not None:
-                ver = db.scalar(
-                    select(NetworkVersion).where(
-                        (NetworkVersion.network_id == net.id) & (NetworkVersion.version == version)
-                    )
-                )
-                if not ver:
-                    raise HTTPException(status_code=404, detail=f"Version {version} not found for network '{network}'")
-                ver_id = ver.id
-            else:
-                ver_id = net.current_version_id
-            if not ver_id:
-                raise HTTPException(status_code=400, detail="No published version for network")
-            snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
-            if not snap:
-                raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
-            graph = snap.compiled_graph or {}
-
-    # Build config for the requested agent
     agents = {a["key"].lower(): a for a in graph.get("agents", [])}
     tools = {t["key"].lower(): t for t in graph.get("tools", [])}
-    a = agents.get(agent_key.strip().lower())
-    if not a:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not in snapshot")
-    equipped = list(a.get("equipped_tools", []))
-    routes = list(a.get("allowed_routes", []))
-    allow = bool(a.get("allow_respond", False)) and allow_respond
-    prompt = a.get("prompt")
-    # Build tools_map for current agent
+    lookup = agent_key.strip().lower()
+    agent = agents.get(lookup)
+    if not agent:
+        raise HTTPException(
+            status_code=404, detail=f"Agent '{agent_key}' not in snapshot"
+        )
+
+    equipped = list(agent.get("equipped_tools", []))
+    routes = list(agent.get("allowed_routes", []))
+    allow = bool(agent.get("allow_respond", False)) and allow_respond
+    prompt = agent.get("prompt")
+
     tools_map = {}
     for tk in equipped:
         item = tools.get(str(tk).strip().lower())
         if not item:
-            # tool not present in snapshot; skip
             continue
         tools_map[item["key"]] = {
             "key": item["key"],
@@ -292,8 +327,9 @@ def _build_run_config(network: str, agent_key: str, version: int | None, allow_r
             "metadata": item.get("metadata") or {},
             "description": item.get("description") or None,
         }
+
     return RunConfig(
-        current_agent=a["key"],
+        current_agent=agent["key"],
         equipped_tools=equipped,
         tools_map=tools_map,
         allowed_routes=routes,
@@ -305,23 +341,16 @@ def _build_run_config(network: str, agent_key: str, version: int | None, allow_r
 
 @app.post("/invoke")
 async def invoke(payload: InvokeRequest) -> dict:
-    # Lazy import here to keep api.py light
     from arion_agents.orchestrator import Instruction, execute_instruction
 
-    if _OTEL_AVAILABLE and os.getenv("OTEL_ENABLED", "true").lower() in {"1", "true", "yes"}:
-        tracer = trace.get_tracer("arion_agents.orchestrator")
-        with tracer.start_as_current_span("invoke") as span:
-            span.set_attribute("request.payload_size", len(str(payload.model_dump())))
-            trace_id = _format_trace_id(span.get_span_context().trace_id)
-            instr = Instruction.model_validate(payload.instruction)
-            cfg = _build_run_config(payload.network, payload.agent_key, payload.version, payload.allow_respond, payload.system_params)
-            result = execute_instruction(instr, cfg)
-            return {"trace_id": trace_id, "result": result.model_dump()}
-    # Fallback when OTel is not available/disabled
+    graph = _load_graph_from_db(payload.network, payload.version)
     instr = Instruction.model_validate(payload.instruction)
-    cfg = _build_run_config(payload.network, payload.agent_key, payload.version, payload.allow_respond, payload.system_params)
+    cfg = _build_run_config_from_graph(
+        graph, payload.agent_key, payload.allow_respond, payload.system_params
+    )
     result = execute_instruction(instr, cfg)
     return {"trace_id": None, "result": result.model_dump()}
+
 
 # Config router
 try:
@@ -347,44 +376,23 @@ async def resolve_prompt(payload: ResolvePromptRequest) -> dict:
     Uses current compiled base prompt + empty tool history + constraints.
     """
     try:
-        from arion_agents.prompts.context_builder import build_constraints, build_context, build_prompt, build_tool_definitions
-        # Identify default agent if not provided
-        from sqlalchemy import select, func
-        from arion_agents.db import get_session
-        from arion_agents.config_models import Network, NetworkVersion, CompiledSnapshot
-
-        with get_session() as db:
-            net = db.scalar(select(Network).where(func.lower(Network.name) == payload.network.strip().lower()))
-            if not net:
-                raise HTTPException(status_code=404, detail=f"Network '{payload.network}' not found")
-            if payload.version is not None:
-                ver = db.scalar(
-                    select(NetworkVersion).where(
-                        (NetworkVersion.network_id == net.id) & (NetworkVersion.version == payload.version)
-                    )
-                )
-                if not ver:
-                    raise HTTPException(status_code=404, detail=f"Version {payload.version} not found for network '{payload.network}'")
-                ver_id = ver.id
-            else:
-                ver_id = net.current_version_id
-            if not ver_id:
-                raise HTTPException(status_code=400, detail="No published version for network")
-            snap = db.scalar(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == ver_id))
-            if not snap:
-                raise HTTPException(status_code=500, detail="Compiled snapshot missing for version")
-            graph = snap.compiled_graph or {}
+        graph = _load_graph_from_db(payload.network, payload.version)
 
         agent_key = payload.agent_key or graph.get("default_agent_key")
         if not agent_key:
-            raise HTTPException(status_code=400, detail="No default agent in snapshot and no agent_key provided")
+            raise HTTPException(
+                status_code=400,
+                detail="No default agent in snapshot and no agent_key provided",
+            )
 
-        # Build a transient cfg and resolve prompt
-        cfg = _build_run_config(payload.network, agent_key, payload.version, True, {})
+        cfg = _build_run_config_from_graph(graph, agent_key, True, {})
         constraints = build_constraints(cfg)
         context = build_context(payload.user_message, exec_log=[], full_tool_outputs=[])
         tool_defs = build_tool_definitions(cfg)
-        prompt = build_prompt(cfg.prompt, context, constraints, tool_defs)
+        route_defs = build_route_definitions(cfg)
+        prompt = build_prompt(
+            cfg, cfg.prompt, context, constraints, tool_defs, route_defs
+        )
         return {"agent_key": agent_key, "prompt": prompt}
     except HTTPException:
         raise

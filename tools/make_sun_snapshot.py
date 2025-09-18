@@ -24,7 +24,12 @@ def main() -> None:
                 "equipped_tools": ["sun"],
                 "allowed_routes": ["writer"],
                 "metadata": {},
-                "prompt": triage_prompt.replace("{agent_key}", "triage").replace("{tools}", "- sun: Get sunrise and sunset times for a given latitude and longitude.").replace("{routes}", "- writer: "),
+                "prompt": triage_prompt.replace("{agent_key}", "triage")
+                .replace(
+                    "{tools}",
+                    "- sun: Get sunrise and sunset times for a given latitude and longitude.",
+                )
+                .replace("{routes}", "- writer: "),
             },
             {
                 "key": "writer",
@@ -35,20 +40,32 @@ def main() -> None:
                 "equipped_tools": [],
                 "allowed_routes": [],
                 "metadata": {},
-                "prompt": writer_prompt.replace("{agent_key}", "writer").replace("{tools}", "(none)").replace("{routes}", "(none)"),
+                "prompt": writer_prompt.replace("{agent_key}", "writer")
+                .replace("{tools}", "(none)")
+                .replace("{routes}", "(none)"),
             },
         ],
         "tools": [
             {
                 "key": "sun",
                 "description": "Get sunrise and sunset times for a given latitude and longitude.",
-                "provider_type": "http:sunapi",
+                "provider_type": "http:request",
                 "params_schema": {
                     "lat": {"source": "agent", "required": True},
                     "lng": {"source": "agent", "required": True},
                 },
                 "secret_ref": None,
                 "metadata": {
+                    "http": {
+                        "base_url": "https://api.sunrise-sunset.org",
+                        "path": "/json",
+                        "method": "GET",
+                        "query": {
+                            "lat": {"source": "agent"},
+                            "lng": {"source": "agent"},
+                        },
+                        "response": {"unwrap": "results"},
+                    },
                     "agent_params_json_schema": {
                         "type": "object",
                         "properties": {
@@ -57,7 +74,7 @@ def main() -> None:
                         },
                         "required": ["lat", "lng"],
                         "additionalProperties": False,
-                    }
+                    },
                 },
             }
         ],
@@ -73,4 +90,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

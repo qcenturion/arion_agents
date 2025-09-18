@@ -31,7 +31,7 @@
     {
       "key": "sun",
       "description": "Get sunrise and sunset times for a given latitude and longitude.",
-      "provider_type": "http:sunapi",
+      "provider_type": "http:request",
       "params_schema": {
         "lat": {
           "source": "agent",
@@ -65,6 +65,22 @@
             "lng"
           ],
           "additionalProperties": false
+        },
+        "http": {
+          "base_url": "https://api.sunrise-sunset.org",
+          "path": "/json",
+          "method": "GET",
+          "query": {
+            "lat": {
+              "source": "agent"
+            },
+            "lng": {
+              "source": "agent"
+            }
+          },
+          "response": {
+            "unwrap": "results"
+          }
         }
       }
     }

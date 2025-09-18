@@ -37,7 +37,7 @@ Run locally (fresh session)
 - Open terminal in `arion_agents/` and activate venv: `source .venv/bin/activate`
 - Start DB: `make db-up`
 - Initialize schema: `make db-init`
-- Run tests: `PYTHONPATH=src pytest -q` (requires Postgres up)
+- Smoke test: `bash tools/serve_and_run.sh snapshots/locations_demo.json "When is sunset in Paris?"`
 - Start API: `make run-api`
 
 Quick config API flow

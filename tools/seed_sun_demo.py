@@ -32,7 +32,10 @@ def ensure_ok(r, expected=(200, 201, 204)):
     if not isinstance(expected, (list, tuple)):
         expected = (expected,)
     if r.status_code not in expected:
-        print(f"Error {r.status_code} for {r.request.method} {r.request.url}: {r.text}", file=sys.stderr)
+        print(
+            f"Error {r.status_code} for {r.request.method} {r.request.url}: {r.text}",
+            file=sys.stderr,
+        )
         r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -84,7 +87,9 @@ def main():
     tool_keys = [t["key"] for t in snapshot.get("tools", [])]
     if tool_keys:
         print(f"Adding tools to network: {tool_keys}")
-        ensure_ok(post(f"/config/networks/{net_id}/tools", json_data={"tool_keys": tool_keys}))
+        ensure_ok(
+            post(f"/config/networks/{net_id}/tools", json_data={"tool_keys": tool_keys})
+        )
 
     # 5. Create all agents from the snapshot
     print("Creating agents from snapshot...")
@@ -97,9 +102,11 @@ def main():
             "key": agent_data["key"],
             "allow_respond": agent_data["allow_respond"],
             "is_default": agent_data["key"] == snapshot.get("default_agent_key"),
-            "additional_data": {"prompt_template": agent_data.get("prompt", "")}
+            "additional_data": {"prompt_template": agent_data.get("prompt", "")},
         }
-        agent = ensure_ok(post(f"/config/networks/{net_id}/agents", json_data=agent_payload), 201)
+        agent = ensure_ok(
+            post(f"/config/networks/{net_id}/agents", json_data=agent_payload), 201
+        )
         agent_ids[agent["key"]] = agent["id"]
 
     # 6. Equip agents with tools and set routes
@@ -107,16 +114,26 @@ def main():
     for agent_data in agents_from_snapshot:
         agent_key = agent_data["key"]
         agent_id = agent_ids[agent_key]
-        
+
         equipped_tools = agent_data.get("equipped_tools", [])
         if equipped_tools:
             print(f"Equipping agent '{agent_key}' with tools: {equipped_tools}")
-            ensure_ok(put(f"/config/networks/{net_id}/agents/{agent_id}/tools", json_data={"tool_keys": equipped_tools}))
+            ensure_ok(
+                put(
+                    f"/config/networks/{net_id}/agents/{agent_id}/tools",
+                    json_data={"tool_keys": equipped_tools},
+                )
+            )
 
         allowed_routes = agent_data.get("allowed_routes", [])
         if allowed_routes:
             print(f"Setting routes for agent '{agent_key}': {allowed_routes}")
-            ensure_ok(put(f"/config/networks/{net_id}/agents/{agent_id}/routes", json_data={"agent_keys": allowed_routes}))
+            ensure_ok(
+                put(
+                    f"/config/networks/{net_id}/agents/{agent_id}/routes",
+                    json_data={"agent_keys": allowed_routes},
+                )
+            )
 
     print("Seed complete. Skipping publish step as it is under refactoring.")
 

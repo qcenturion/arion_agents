@@ -8,9 +8,9 @@ This document outlines the system architecture at a high level. It will evolve a
 - Data: configuration DB only in POC; production-ready DB is pluggable.
 
 ## Deployment Targets
-- Local Dev: run FastAPI with Uvicorn, plus Docker Compose for DB and Observability.
+- Local Dev: run FastAPI with Uvicorn and Docker Compose for Postgres.
 - Production: containerized ASGI app on GCP Cloud Run (preferred); Cloud Functions 2nd gen is possible via container entry.
-- 12-factor config via env vars (`DATABASE_URL`, LLM provider keys, OTel).
+- 12-factor config via env vars (`DATABASE_URL`, LLM provider keys, logging levels).
 
 ## Invocation Model
 - Each invocation is a stateless request that executes the Orchestrator loop until a RESPOND action or policy stop.
@@ -32,11 +32,10 @@ This document outlines the system architecture at a high level. It will evolve a
 - Migrations: managed by Alembic; no raw DDL in code.
 - Access Pattern: read-mostly for configuration (agents, tools). Runtime session data remains out of DB for POC; may be introduced later via a separate persistence strategy.
 
-## Runtime Telemetry & Events
-- OpenTelemetry for traces/metrics/logs to a Collector, Jaeger, Prometheus, Grafana.
-- Execution Events (domain-level) emitted by Orchestrator for UI streaming.
-  - Transport: SSE (simple) or WebSockets (bi-directional) — both supported by Cloud Run.
-  - Correlate events with `trace_id` and a generated `run_id`.
+## Runtime Observability
+- Default logging targets rotating files; forward to Cloud Logging or another aggregator in production.
+- Future: add tracing/metrics when the runtime stabilizes so the same instrumentation can feed UI replay.
+- Execution events (domain-level) should stream over SSE/WebSockets for the frontend with a generated `run_id`.
 
 ## Cross-Cutting Concerns
 - Config & Secrets management

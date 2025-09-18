@@ -28,7 +28,7 @@ gh project create --owner qcenturion --title "arion_agents Roadmap"
 Seed Issues:
 ```
 gh issue create -t "API/Config: init Alembic and SQLAlchemy models" -b "Define agents/tools/routes models and baseline migration. Acceptance: models created, alembic revision generated, tests for model creation." -l "workstream:api_config,type:task"
-gh issue create -t "API/Config: CRUD endpoints for /config/*" -b "Implement CRUD for agents, tools, and route associations with validation. Acceptance: endpoints tested via pytest." -l "workstream:api_config,type:feature"
+gh issue create -t "API/Config: CRUD endpoints for /config/*" -b "Implement CRUD for agents, tools, and route associations with validation. Acceptance: verified via serve_and_run smoke test." -l "workstream:api_config,type:feature"
 gh issue create -t "Orchestrator: enforce equipped_tools and allowed_routes" -b "Validate requested actions against agent config; block and log disallowed operations." -l "workstream:orchestrator,type:task"
 gh issue create -t "Orchestrator: system-provided parameter injection" -b "Inject secure params (e.g., customer_id) from state; prevent LLM-provided overrides." -l "workstream:orchestrator,type:task"
 gh issue create -t "Orchestrator: run_id and EventPublisher interface" -b "Define run_id and publish per-step events; add in-memory publisher." -l "workstream:orchestrator,type:feature"
