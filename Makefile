@@ -79,3 +79,11 @@ compose-down:
 
 compose-logs:
 	docker-compose logs -f api db
+rag-demo:
+	@echo "Indexing sample corpus in the RAG service..."
+	PYTHONPATH=src .venv/bin/python tools/rag_index.py tools/rag_service/city_activities.md --service-url http://localhost:7100 --collection city_activities
+	@echo "Setting up locations_demo with city_rag tool..."
+	PYTHONPATH=src .venv/bin/python tools/setup_rag_network.py
+	@echo "Smoke testing via serve_and_run..."
+	bash tools/serve_and_run.sh locations_demo "What should I do in London?" --network locations_demo
+	@echo "Done."

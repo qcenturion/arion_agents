@@ -60,6 +60,11 @@ _setup_file_logging()
 app = FastAPI(title="arion_agents API")
 
 
+@app.on_event("startup")
+async def _reattach_logging() -> None:
+    _setup_file_logging()
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}

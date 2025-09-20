@@ -8,7 +8,7 @@
 ## Build, Run, and Development Commands
 - Activate the bundled venv: `source .venv/bin/activate`, then `make install` to sync dependencies.
 - `make lint` / `make format` invoke Ruff on `src/`; run them before sending a PR.
-- Local API (Postgres): export `DATABASE_URL` and use `make run-api`; for quick experiments without Postgres, `make run-api-sqlite` will create `dev.db` automatically.
+- Local API (Postgres): export `DATABASE_URL` and use `make run-api`; for quick experiments without Postgres, `make run-api-sqlite` will create `dev.db` automatically. See `docs/rag_quickstart.md` for the RAG service setup order.
 - Fast feedback loop: `make dev` enables Uvicorn reloads and verbose logging.
 - End-to-end sanity check: `bash tools/serve_and_run.sh snapshots/locations_demo.json "When is sunset in Paris?"` boots the API, sends `/run` with an inline snapshot, and tails logs.
 
@@ -26,3 +26,8 @@
 - Store secrets in `.secrets/` (e.g., `.secrets/gemini_api_key`) and load them via environment variables.
 - Core env vars: `DATABASE_URL` (runtime store), `GEMINI_API_KEY`/`GEMINI_MODEL` (LLM access), optional `SQL_ECHO` for verbose DB logging.
 - Remove stray SQLite files after schema churn; regenerate with `make run-api-sqlite` if needed.
+
+## Local Testing
+- Run the smoke script: `bash tools/serve_and_run.sh snapshots/locations_demo.json "When is sunset in Paris?"`
+- Summaries: `./tools/show_last_run.py` prints prompts, tool calls, execution log, final result.
+- Logs: `logs/server.log` (rotating file) and `/tmp/arion_uvicorn.log` (detailed Uvicorn output).

@@ -25,21 +25,54 @@ class ExecutionLog:
         self.epoch_by_agent[agent_key] = self.current_epoch
         self.last_agent = agent_key
 
-    def append_agent_step(self, step: int, agent_key: str, user_input_preview: str, decision_preview: Dict[str, Any]) -> None:
-        self.entries.append(
-            {
-                "type": "agent",
-                "step": step,
-                "epoch": self.current_epoch,
-                "agent_key": agent_key,
-                "input_preview": _truncate(user_input_preview, 80),
-                "decision": {
-                    "action": decision_preview.get("action"),
-                    "action_reasoning": _truncate(decision_preview.get("action_reasoning", ""), 120),
-                    "action_details": _truncate(decision_preview.get("action_details", {}), 120),
-                },
-            }
-        )
+    def append_agent_step(
+        self,
+        step: int,
+        agent_key: str,
+        user_input_preview: str,
+        decision_preview: Dict[str, Any],
+        *,
+        step_started_at_ms: Optional[int] = None,
+        step_duration_ms: Optional[int] = None,
+        step_completed_at_ms: Optional[int] = None,
+        llm_started_at_ms: Optional[int] = None,
+        llm_duration_ms: Optional[int] = None,
+        llm_completed_at_ms: Optional[int] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "type": "agent",
+            "step": step,
+            "epoch": self.current_epoch,
+            "agent_key": agent_key,
+            "input_preview": _truncate(user_input_preview, 80),
+            "decision": {
+                "action": decision_preview.get("action"),
+                "action_reasoning": _truncate(
+                    decision_preview.get("action_reasoning", ""), 120
+                ),
+                "action_details": _truncate(
+                    decision_preview.get("action_details", {}), 120
+                ),
+            },
+        }
+        timing: Dict[str, Any] = {}
+        if step_started_at_ms is not None:
+            timing["step_started_at_ms"] = step_started_at_ms
+        if step_duration_ms is not None:
+            payload["duration_ms"] = step_duration_ms
+            timing["step_duration_ms"] = step_duration_ms
+        if step_completed_at_ms is not None:
+            timing["step_completed_at_ms"] = step_completed_at_ms
+        if llm_started_at_ms is not None:
+            timing["llm_started_at_ms"] = llm_started_at_ms
+        if llm_duration_ms is not None:
+            payload["llm_duration_ms"] = llm_duration_ms
+            timing["llm_duration_ms"] = llm_duration_ms
+        if llm_completed_at_ms is not None:
+            timing["llm_completed_at_ms"] = llm_completed_at_ms
+        if timing:
+            payload["timing"] = timing
+        self.entries.append(payload)
 
     def append_tool_step(
         self,
@@ -51,21 +84,36 @@ class ExecutionLog:
         response_preview: str,
         status: str,
         duration_ms: int,
+        *,
+        started_at_ms: Optional[int] = None,
+        completed_at_ms: Optional[int] = None,
+        total_duration_ms: Optional[int] = None,
     ) -> None:
-        self.entries.append(
-            {
-                "type": "tool",
-                "step": step,
-                "epoch": self.current_epoch,
-                "agent_key": agent_key,
-                "tool_key": tool_key,
-                "execution_id": execution_id,
-                "request_preview": _truncate(request_preview, 50),
-                "response_preview": _truncate(response_preview, 100),
-                "status": status,
-                "duration_ms": duration_ms,
-            }
-        )
+        payload: Dict[str, Any] = {
+            "type": "tool",
+            "step": step,
+            "epoch": self.current_epoch,
+            "agent_key": agent_key,
+            "tool_key": tool_key,
+            "execution_id": execution_id,
+            "request_preview": _truncate(request_preview, 50),
+            "response_preview": _truncate(response_preview, 100),
+            "status": status,
+            "duration_ms": duration_ms,
+        }
+        timing: Dict[str, Any] = {}
+        if started_at_ms is not None:
+            timing["started_at_ms"] = started_at_ms
+        if completed_at_ms is not None:
+            timing["completed_at_ms"] = completed_at_ms
+        if duration_ms is not None:
+            timing["duration_ms"] = duration_ms
+        if total_duration_ms is not None:
+            timing["total_duration_ms"] = total_duration_ms
+            payload["total_duration_ms"] = total_duration_ms
+        if timing:
+            payload["timing"] = timing
+        self.entries.append(payload)
 
     def current_epoch_for(self, agent_key: str) -> int:
         return self.epoch_by_agent.get(agent_key, self.current_epoch)
@@ -78,27 +126,49 @@ class ToolExecutionLog:
     def __init__(self) -> None:
         self.store: Dict[str, Dict[str, Any]] = {}
 
-    def put(self, agent_key: str, tool_key: str, merged_params: Dict[str, Any], full_result: Any, duration_ms: int) -> str:
+    def put(
+        self,
+        agent_key: str,
+        tool_key: str,
+        merged_params: Dict[str, Any],
+        full_result: Any,
+        duration_ms: int,
+        *,
+        started_at_ms: Optional[int] = None,
+        completed_at_ms: Optional[int] = None,
+        total_duration_ms: Optional[int] = None,
+    ) -> str:
         exec_id = uuid.uuid4().hex
+        timestamp_ms = (
+            completed_at_ms if completed_at_ms is not None else int(time.time() * 1000)
+        )
         self.store[exec_id] = {
             "agent_key": agent_key,
             "tool_key": tool_key,
             "params": merged_params,
             "result": full_result,
             "duration_ms": duration_ms,
-            "ts": int(time.time() * 1000),
+            "ts": timestamp_ms,
+            "started_at_ms": started_at_ms,
+            "completed_at_ms": completed_at_ms,
+            "total_duration_ms": total_duration_ms,
         }
         return exec_id
 
     def get(self, exec_id: str) -> Optional[Dict[str, Any]]:
         return self.store.get(exec_id)
 
-    def collect_full_for(self, entries: List[Dict[str, Any]], agent_key: str, epoch: int) -> List[Tuple[str, Dict[str, Any]]]:
+    def collect_full_for(
+        self, entries: List[Dict[str, Any]], agent_key: str, epoch: int
+    ) -> List[Tuple[str, Dict[str, Any]]]:
         out: List[Tuple[str, Dict[str, Any]]] = []
         for e in entries:
-            if e.get("type") == "tool" and e.get("agent_key") == agent_key and e.get("epoch") == epoch:
+            if (
+                e.get("type") == "tool"
+                and e.get("agent_key") == agent_key
+                and e.get("epoch") == epoch
+            ):
                 ex_id = e.get("execution_id")
                 if ex_id and ex_id in self.store:
                     out.append((ex_id, self.store[ex_id]))
         return out
-

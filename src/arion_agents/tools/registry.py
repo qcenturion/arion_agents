@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Type
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from .base import BaseTool, ToolConfig, ToolRunInput, ToolRunOutput
+from .rag.tool import HybridRAGTool
 
 
 class EchoTool(BaseTool):
@@ -207,6 +208,7 @@ class HttpRequestTool(BaseTool):
 PROVIDERS: Dict[str, Type[BaseTool]] = {
     "builtin:echo": EchoTool,
     "http:request": HttpRequestTool,
+    "rag:hybrid": HybridRAGTool,
 }
 
 

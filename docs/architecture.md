@@ -1,52 +1,43 @@
 # Architecture Overview
 
-This document outlines the system architecture at a high level. It will evolve as features are added.
-
 ## System Context
-- External services: LLM providers, vector DB / memory store, GitHub, observability.
-- Interfaces: CLI, (future) HTTP API, and tool integrations.
-- Data: configuration DB only in POC; production-ready DB is pluggable.
+- External services: Gemini LLM, HTTP tools, future RAG backend (Qdrant), observability sinks.
+- Interfaces: REST control plane (`/config`), runtime execution (`/run`/`/invoke`), Upcoming frontend UI, tooling scripts.
+- Data: configuration in Postgres, compiled snapshots (`cfg_compiled_snapshots`), runtime logs in `logs/`.
 
 ## Deployment Targets
-- Local Dev: run FastAPI with Uvicorn and Docker Compose for Postgres.
-- Production: containerized ASGI app on GCP Cloud Run (preferred); Cloud Functions 2nd gen is possible via container entry.
-- 12-factor config via env vars (`DATABASE_URL`, LLM provider keys, logging levels).
+- Local Dev: FastAPI + Uvicorn with Postgres via docker-compose.
+- Production: containerized ASGI app on GCP (Cloud Run or GKE). Postgres (Cloud SQL/AlloyDB) runs separately; runtime only reads compiled snapshots.
+- Configuration via env vars (`DATABASE_URL`, `GEMINI_API_KEY`, logging levels). Tracing is optional; file logs are default.
 
-## Invocation Model
-- Each invocation is a stateless request that executes the Orchestrator loop until a RESPOND action or policy stop.
-- For long-running or asynchronous patterns, consider Pub/Sub + callbacks, but MVP is synchronous HTTP.
-- Real-time visibility: an events stream (SSE/WebSocket) publishes step-by-step execution updates for the UI.
+## Runtime Flow
+1. Author networks/tools/agents via `/config/*`.
+2. Compile snapshots to `cfg_compiled_snapshots`.
+3. `/run` loads the snapshot (DB or inline payload), executes the loop, logs detailed artifacts.
+4. `/invoke` executes a single validated instruction.
 
-## Core Components
-- Agent Core: policy loop, tool routing, error handling.
-- LLM Integration: providers, retry/backoff, prompt templates.
-- Memory & State: short-term context, long-term storage, traces.
-- Tools & Integrations: external APIs, file I/O, search.
-- Interfaces: CLI now; API/SDK later.
- - Control Plane (Frontend): CRUD for agents/tools/routes; visualize topology and runs; trigger invocations.
+## Control-Plane UI
+- CRUD for networks, tools, agents, routes.
+- Snapshot history (publish, diff, rollback).
+- Run viewer built on `logs/runs/` structure (prompts, raw LLM output, tool log, execution log, final response).
+- Tool catalog surfacing provider metadata (e.g., `http:request`, upcoming RAG retriever).
 
-## Database Decoupling
-- Principle: the application must not depend on a specific SQL vendor. Use an abstraction (SQLAlchemy ORM + repository/service layer) with a single env `DATABASE_URL`.
-- Local Dev: default to SQLite for ease of setup.
-- Production: recommend managed Postgres (e.g., GCP Cloud SQL or AlloyDB). MySQL or others are possible via drivers.
-- Migrations: managed by Alembic; no raw DDL in code.
-- Access Pattern: read-mostly for configuration (agents, tools). Runtime session data remains out of DB for POC; may be introduced later via a separate persistence strategy.
+## Tools Layer
+- `http:request` provider handles all HTTP integrations via structured metadata (query, headers, body, response shaping).
+- Additional providers: hybrid RAG (service-backed retrieval) and any bespoke tools.
+- Secrets resolved via `src/arion_agents/secrets.py` (env or `.secrets/` files).
 
-## Runtime Observability
-- Default logging targets rotating files; forward to Cloud Logging or another aggregator in production.
-- Future: add tracing/metrics when the runtime stabilizes so the same instrumentation can feed UI replay.
-- Execution events (domain-level) should stream over SSE/WebSockets for the frontend with a generated `run_id`.
+## Logging & Observability
+- `logs/server.log` (rotating file) captures prompts, tool requests, LLM responses.
+- `logs/runs/*.json` store structured artifacts for each `/run` call.
+- `tools/show_last_run.py` provides quick inspection; frontend run viewer will reuse the same schema.
 
-## Cross-Cutting Concerns
-- Config & Secrets management
-- Logging/Tracing/Telemetry
-- Evaluation & Testing strategy
-- Security & Compliance considerations
- - Portability across database backends (SQLA + Alembic)
+## Hybrid RAG Integration
+- Retrieval runs in a dedicated container that handles chunking, embeddings, indexing, and reranking; the runtime calls it via `rag:hybrid` over HTTP.
+- Data prep pipeline (document upload, metadata defaults) is tracked in `docs/workstreams/RAG_hybrid_search.md`.
+- Runtime integration exposes the retriever as a provider under `rag:hybrid` and forwards queries to the service with agent-validated parameters.
 
-## Open Questions / Decisions
-- Which providers and SDKs to prioritize?
-- Standard memory interface and backing store?
-- Tracing/eval stack choices (e.g., TruLens, DeepEval, promptfoo)?
- - Postgres vs. MySQL in production? (default to Postgres)
- - Whether to persist runtime session state later and where
+## Open Questions
+- Frontend framework choice and hosting (likely React + Vite?).
+- Real-time streaming (SSE/WebSocket) for live run inspection beyond static logs.
+- Long-term observability (metrics/traces) if we reintroduce OTel.
