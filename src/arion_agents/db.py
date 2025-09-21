@@ -4,6 +4,7 @@ from typing import Iterator
 
 from sqlmodel import create_engine, Session
 from sqlalchemy.types import JSON as SAJSON
+
 try:
     from sqlalchemy.dialects.postgresql import JSONB as PGJSONB
 except ImportError:
@@ -58,4 +59,6 @@ def init_db() -> None:
     """Create all tables for configured models if missing (dev/MVP bootstrap)."""
     from sqlmodel import SQLModel
     from . import config_models  # noqa: F401
+    from . import run_models  # noqa: F401
+
     SQLModel.metadata.create_all(engine)

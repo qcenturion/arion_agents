@@ -42,6 +42,8 @@ def run_loop(
     step = 0
     debug_steps = []
     step_summaries: list[Dict[str, Any]] = []
+    step_events: list[Dict[str, Any]] = []
+    next_seq = 0
 
     def _latency_payload() -> Dict[str, Any]:
         run_duration_ms = int((time.perf_counter() - run_perf_start) * 1000)
@@ -136,6 +138,9 @@ def run_loop(
             # Mirror the context behavior: always show the original message
             user_input_preview=user_message,
             decision_preview=decision_dump,
+            prompt=prompt,
+            raw_response=text,
+            decision_full=decision_dump,
             step_started_at_ms=step_started_at_ms,
             step_duration_ms=step_duration_ms,
             step_completed_at_ms=step_completed_at_ms,
@@ -157,16 +162,30 @@ def run_loop(
         step_summary["result_status"] = res.status
         step_summaries.append(step_summary)
 
+        agent_entry = exec_log.entries[-1]
+        step_events.append(
+            {
+                "seq": next_seq,
+                "t": step_started_at_ms,
+                "step": {
+                    "kind": "log_entry",
+                    "entryType": "agent",
+                    "payload": agent_entry,
+                },
+            }
+        )
+        next_seq += 1
+
         if instr.action.type == "RESPOND":
             out = {
                 "final": res.model_dump(),
                 "execution_log": exec_log.to_list(),
                 "tool_log_keys": list(tool_log.store.keys()),
                 "debug": debug_steps if debug else None,
+                "step_events": step_events,
             }
             out["latency"] = _latency_payload()
-            if debug:
-                out["tool_log"] = tool_log.store
+            out["tool_log"] = tool_log.store
             return out
         elif instr.action.type == "USE_TOOL":
             # res.response structure includes tool, params, result, duration_ms
@@ -209,6 +228,8 @@ def run_loop(
                 response_preview=str(full_result),
                 status=res.status,
                 duration_ms=duration_ms,
+                request_payload=params_for_log or {},
+                response_payload=full_result,
                 started_at_ms=tool_started_at_ms,
                 completed_at_ms=tool_completed_at_ms,
                 total_duration_ms=action_duration_ms,
@@ -221,6 +242,19 @@ def run_loop(
                     "tool_total_duration_ms": action_duration_ms,
                 }
             )
+            tool_entry = exec_log.entries[-1]
+            step_events.append(
+                {
+                    "seq": next_seq,
+                    "t": tool_started_at_ms,
+                    "step": {
+                        "kind": "log_entry",
+                        "entryType": "tool",
+                        "payload": tool_entry,
+                    },
+                }
+            )
+            next_seq += 1
             # Stay with same agent
         elif instr.action.type == "ROUTE_TO_AGENT":
             # Switch agent; epoch will increment on next start_agent_epoch call
@@ -234,10 +268,10 @@ def run_loop(
                 "execution_log": exec_log.to_list(),
                 "tool_log_keys": list(tool_log.store.keys()),
                 "debug": debug_steps if debug else None,
+                "step_events": step_events,
             }
             out["latency"] = _latency_payload()
-            if debug:
-                out["tool_log"] = tool_log.store
+            out["tool_log"] = tool_log.store
             return out
 
         step += 1
@@ -248,8 +282,8 @@ def run_loop(
         "execution_log": exec_log.to_list(),
         "tool_log_keys": list(tool_log.store.keys()),
         "debug": debug_steps if debug else None,
+        "step_events": step_events,
     }
     out["latency"] = _latency_payload()
-    if debug:
-        out["tool_log"] = tool_log.store
+    out["tool_log"] = tool_log.store
     return out

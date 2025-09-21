@@ -16,6 +16,7 @@ from .config_models import (
     NetworkVersion,
     CompiledSnapshot,
 )
+from .system_params import available_system_param_keys
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -29,6 +30,12 @@ def get_db_dep() -> Session:
 
 def _lc(s: str) -> str:
     return s.strip().lower()
+
+
+
+@router.get("/system_params/defaults")
+def get_system_param_defaults() -> dict:
+    return available_system_param_keys()
 
 
 # Define Pydantic models for API input/output where they differ from the DB model.

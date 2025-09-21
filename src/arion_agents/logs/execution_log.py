@@ -32,6 +32,9 @@ class ExecutionLog:
         user_input_preview: str,
         decision_preview: Dict[str, Any],
         *,
+        prompt: Optional[str] = None,
+        raw_response: Optional[str] = None,
+        decision_full: Optional[Dict[str, Any]] = None,
         step_started_at_ms: Optional[int] = None,
         step_duration_ms: Optional[int] = None,
         step_completed_at_ms: Optional[int] = None,
@@ -55,6 +58,12 @@ class ExecutionLog:
                 ),
             },
         }
+        if prompt is not None:
+            payload["prompt"] = prompt
+        if raw_response is not None:
+            payload["raw_response"] = raw_response
+        if decision_full is not None:
+            payload["decision_full"] = decision_full
         timing: Dict[str, Any] = {}
         if step_started_at_ms is not None:
             timing["step_started_at_ms"] = step_started_at_ms
@@ -85,6 +94,8 @@ class ExecutionLog:
         status: str,
         duration_ms: int,
         *,
+        request_payload: Optional[Dict[str, Any]] = None,
+        response_payload: Optional[Any] = None,
         started_at_ms: Optional[int] = None,
         completed_at_ms: Optional[int] = None,
         total_duration_ms: Optional[int] = None,
@@ -101,6 +112,10 @@ class ExecutionLog:
             "status": status,
             "duration_ms": duration_ms,
         }
+        if request_payload is not None:
+            payload["request_payload"] = request_payload
+        if response_payload is not None:
+            payload["response_payload"] = response_payload
         timing: Dict[str, Any] = {}
         if started_at_ms is not None:
             timing["started_at_ms"] = started_at_ms

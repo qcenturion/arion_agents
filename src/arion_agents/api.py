@@ -1,9 +1,13 @@
 import os
 import json
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 import logging
 from logging.handlers import RotatingFileHandler
@@ -16,6 +20,7 @@ from arion_agents.prompts.context_builder import (
 )
 
 from arion_agents.runtime_models import CompiledGraph
+from arion_agents.system_params import merge_with_defaults
 
 # Basic logging config; level via LOG_LEVEL (default INFO)
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -31,6 +36,14 @@ except Exception:
 def _project_root() -> Path:
     # src/arion_agents/api.py -> repo_root/arion_agents
     return Path(__file__).resolve().parents[2]
+
+
+@dataclass
+class GraphBundle:
+    graph: dict
+    network_id: int
+    network_version_id: int
+    graph_version_key: str
 
 
 def _setup_file_logging() -> None:
@@ -59,10 +72,30 @@ _setup_file_logging()
 
 app = FastAPI(title="arion_agents API")
 
+_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.on_event("startup")
-async def _reattach_logging() -> None:
+async def _startup() -> None:
     _setup_file_logging()
+    try:
+        from arion_agents.db import init_db
+
+        init_db()
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to initialize database tables")
 
 
 @app.get("/health")
@@ -198,16 +231,38 @@ async def run_once(payload: RunOnceRequest) -> dict:
     # Per-run log record
     run_started = time.time()
     run_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    run_record = {"request": payload.model_dump(), "started_at_utc": run_ts}
+    run_id = uuid.uuid4().hex
+    merged_system_params = merge_with_defaults(payload.system_params)
+
+    request_payload = payload.model_dump()
+    request_payload["system_params"] = merged_system_params
+    request_payload["trace_id"] = run_id
+
+    run_record = {
+        "request": request_payload,
+        "started_at_utc": run_ts,
+        "run_id": run_id,
+    }
     out: dict | None = None
     try:
         from arion_agents.engine.loop import run_loop
 
         if payload.snapshot is not None:
             graph = payload.snapshot.as_dict()
+            network_id = None
+            network_version_id = payload.snapshot.version_id
+            graph_version_key = (
+                str(payload.snapshot.version_id)
+                if payload.snapshot.version_id is not None
+                else None
+            )
         else:
             assert payload.network is not None  # validated upstream
-            graph = _load_graph_from_db(payload.network, payload.version)
+            bundle = _load_graph_from_db(payload.network, payload.version)
+            graph = bundle.graph
+            network_id = bundle.network_id
+            network_version_id = bundle.network_version_id
+            graph_version_key = bundle.graph_version_key
 
         default_agent = payload.agent_key or graph.get("default_agent_key")
         if not default_agent:
@@ -218,7 +273,7 @@ async def run_once(payload: RunOnceRequest) -> dict:
 
         def _get_cfg(agent_key: str):
             return _build_run_config_from_graph(
-                graph, agent_key, True, payload.system_params
+                graph, agent_key, True, merged_system_params
             )
 
         out = run_loop(
@@ -229,6 +284,50 @@ async def run_once(payload: RunOnceRequest) -> dict:
             model=payload.model,
             debug=payload.debug,
         )
+        if out is None:
+            out = {}
+        out.setdefault("trace_id", run_id)
+        if graph_version_key is not None:
+            out.setdefault("graph_version_id", graph_version_key)
+        out.setdefault("network_id", network_id)
+        out.setdefault("system_params", merged_system_params)
+
+        step_events = out.get("step_events")
+        if isinstance(step_events, list):
+            for idx, env in enumerate(step_events):
+                if not isinstance(env, dict):
+                    continue
+                env.setdefault("traceId", run_id)
+                env.setdefault("seq", idx)
+                if "t" not in env or env["t"] is None:
+                    env["t"] = int(time.time() * 1000)
+
+        try:
+            from arion_agents.run_models import RunRecord
+            from arion_agents.db import get_session
+
+            status = (
+                (out.get("final") or {}).get("status")
+                if isinstance(out.get("final"), dict)
+                else None
+            )
+            with get_session() as db:
+                db.add(
+                    RunRecord(
+                        run_id=run_id,
+                        network_id=network_id,
+                        network_version_id=network_version_id,
+                        graph_version_key=graph_version_key,
+                        user_message=payload.user_message,
+                        status=status or "unknown",
+                        request_payload=request_payload,
+                        response_payload=out,
+                    )
+                )
+        except Exception:
+            # Persistence failure should not block the response; errors are logged later.
+            pass
+
         return out
     except HTTPException:
         raise
@@ -253,7 +352,7 @@ async def run_once(payload: RunOnceRequest) -> dict:
             pass
 
 
-def _load_graph_from_db(network: str, version: int | None) -> dict:
+def _load_graph_from_db(network: str, version: int | None) -> GraphBundle:
     if not network:
         raise HTTPException(status_code=400, detail="Network name is required")
 
@@ -284,7 +383,11 @@ def _load_graph_from_db(network: str, version: int | None) -> dict:
             ver_id = ver.id
         else:
             ver_id = net.current_version_id
-        if not ver_id:
+            if ver_id:
+                ver = db.get(NetworkVersion, ver_id)
+            else:
+                ver = None
+        if not ver_id or not ver:
             raise HTTPException(
                 status_code=400, detail="No published version for network"
             )
@@ -297,7 +400,14 @@ def _load_graph_from_db(network: str, version: int | None) -> dict:
             raise HTTPException(
                 status_code=500, detail="Compiled snapshot missing for version"
             )
-        return snap.compiled_graph or {}
+        graph = snap.compiled_graph or {}
+        graph_version_key = f"{net.id}:{ver.version}"
+        return GraphBundle(
+            graph=graph,
+            network_id=net.id,
+            network_version_id=ver_id,
+            graph_version_key=graph_version_key,
+        )
 
 
 def _build_run_config_from_graph(
@@ -344,17 +454,131 @@ def _build_run_config_from_graph(
     )
 
 
+def _load_run_record(run_id: str):
+    from sqlalchemy import select
+    from arion_agents.run_models import RunRecord
+    from arion_agents.db import get_session
+
+    with get_session() as db:
+        stmt = select(RunRecord).where(RunRecord.run_id == run_id)
+        run = db.exec(stmt).scalars().first()
+        if run is None:
+            return None
+        db.expunge(run)
+        return run
+
+
+def _run_record_to_snapshot(record, include_steps: bool = True) -> dict:
+    response_payload = record.response_payload or {}
+    step_events = response_payload.get("step_events") if include_steps else []
+    envelopes: list[dict] = []
+    if include_steps and isinstance(step_events, list):
+        for idx, env in enumerate(step_events):
+            if not isinstance(env, dict):
+                continue
+            seq = env.get("seq", idx)
+            t_val = env.get("t")
+            try:
+                t_int = int(t_val) if t_val is not None else None
+            except Exception:
+                t_int = None
+            step_payload = env.get("step")
+            if not isinstance(step_payload, dict):
+                continue
+            envelopes.append(
+                {
+                    "traceId": record.run_id,
+                    "seq": seq,
+                    "t": t_int or 0,
+                    "step": step_payload,
+                }
+            )
+
+    response_system_params = None
+    if isinstance(record.response_payload, dict):
+        response_system_params = record.response_payload.get("system_params")
+
+    metadata = {
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+        "status": record.status,
+        "network_id": record.network_id,
+        "network_version_id": record.network_version_id,
+        "graph_version_key": record.graph_version_key,
+        "user_message": record.user_message,
+        "system_params": response_system_params,
+    }
+    final_payload = (
+        response_payload.get("final") if isinstance(response_payload, dict) else None
+    )
+    if final_payload is not None:
+        metadata["final"] = final_payload
+
+    return {
+        "traceId": record.run_id,
+        "graphVersionId": record.graph_version_key,
+        "steps": envelopes,
+        "metadata": metadata,
+    }
+
+
 @app.post("/invoke")
 async def invoke(payload: InvokeRequest) -> dict:
     from arion_agents.orchestrator import Instruction, execute_instruction
 
-    graph = _load_graph_from_db(payload.network, payload.version)
+    bundle = _load_graph_from_db(payload.network, payload.version)
     instr = Instruction.model_validate(payload.instruction)
     cfg = _build_run_config_from_graph(
-        graph, payload.agent_key, payload.allow_respond, payload.system_params
+        bundle.graph,
+        payload.agent_key,
+        payload.allow_respond,
+        merge_with_defaults(payload.system_params),
     )
     result = execute_instruction(instr, cfg)
     return {"trace_id": None, "result": result.model_dump()}
+
+
+@app.get("/runs")
+async def list_runs(limit: int = 20) -> list[dict]:
+    from sqlalchemy import select
+    from arion_agents.run_models import RunRecord
+    from arion_agents.db import get_session
+
+    if limit <= 0:
+        limit = 20
+
+    with get_session() as db:
+        stmt = select(RunRecord).order_by(RunRecord.created_at.desc()).limit(limit)
+        records = list(db.exec(stmt).scalars())
+        for rec in records:
+            db.expunge(rec)
+    return [_run_record_to_snapshot(rec, include_steps=False) for rec in records]
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict:
+    record = _load_run_record(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="run not found")
+    return _run_record_to_snapshot(record, include_steps=True)
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str, from_seq: int | None = None) -> StreamingResponse:
+    record = _load_run_record(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    snapshot = _run_record_to_snapshot(record, include_steps=True)
+    envelopes = snapshot.get("steps") or []
+    if from_seq is not None:
+        envelopes = [env for env in envelopes if env.get("seq", 0) >= from_seq]
+
+    def _event_stream():
+        for env in envelopes:
+            payload = json.dumps(env)
+            yield f"event: run.step\ndata: {payload}\n\n"
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
 
 # Config router
@@ -381,7 +605,8 @@ async def resolve_prompt(payload: ResolvePromptRequest) -> dict:
     Uses current compiled base prompt + empty tool history + constraints.
     """
     try:
-        graph = _load_graph_from_db(payload.network, payload.version)
+        bundle = _load_graph_from_db(payload.network, payload.version)
+        graph = bundle.graph
 
         agent_key = payload.agent_key or graph.get("default_agent_key")
         if not agent_key:
