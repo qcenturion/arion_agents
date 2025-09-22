@@ -50,7 +50,7 @@ export function GraphViewer({ graphVersionId, staticGraph, focusTraceId }: Graph
       renderEdgeLabels: false,
       allowInvalidContainer: false,
       enableEdgeHoverEvents: true,
-      nodeReducer: (node, data) => {
+      nodeReducer: (node: string, data: any) => {
         if (data.highlighted) {
           return {
             ...data,
@@ -60,7 +60,7 @@ export function GraphViewer({ graphVersionId, staticGraph, focusTraceId }: Graph
         }
         return data;
       },
-      edgeReducer: (edge, data) => {
+      edgeReducer: (edge: string, data: any) => {
         if (data.highlighted) {
           return {
             ...data,
@@ -70,7 +70,7 @@ export function GraphViewer({ graphVersionId, staticGraph, focusTraceId }: Graph
         }
         return data;
       }
-    });
+    } as any);
 
     renderer.on("clickNode", ({ node }) => {
       selectNode(node);
@@ -118,13 +118,13 @@ export function GraphViewer({ graphVersionId, staticGraph, focusTraceId }: Graph
 }
 
 function applyVisualAttributes(graph: any) {
-  graph.forEachNode((node, attributes) => {
+  graph.forEachNode((node: string, attributes: any) => {
     graph.setNodeAttribute(node, "size", attributes.pinned ? 12 : 8);
     graph.setNodeAttribute(node, "label", attributes.label);
     graph.setNodeAttribute(node, "color", getNodeColour(attributes.type));
   });
 
-  graph.forEachEdge((edge, attributes) => {
+  graph.forEachEdge((edge: string, attributes: any) => {
     graph.setEdgeAttribute(edge, "size", 1.5);
     graph.setEdgeAttribute(edge, "color", getEdgeColour(attributes.type));
   });

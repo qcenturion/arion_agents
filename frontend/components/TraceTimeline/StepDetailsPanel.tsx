@@ -9,7 +9,7 @@ export function StepDetailsPanel() {
 
   const content = useMemo(() => {
     if (!current) {
-      return <p className="text-sm text-foreground/60">Select a timeline entry to inspect prompts, tool payloads, and timings.</p>;
+      return <p className="text-sm text-foreground/60">Select a step to inspect prompts, tool payloads, and timings.</p>;
     }
     if (current.step.kind !== "log_entry") {
       return (

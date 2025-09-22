@@ -9,7 +9,6 @@ interface RunDiffViewerProps {
   secondaryTraceId: string;
   primarySteps: RunEnvelope[];
   secondarySteps: RunEnvelope[];
-  graphVersionId: string;
 }
 
 export function RunDiffViewer({ primaryTraceId, secondaryTraceId, primarySteps, secondarySteps }: RunDiffViewerProps) {

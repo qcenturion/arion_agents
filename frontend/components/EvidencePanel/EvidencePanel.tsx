@@ -64,7 +64,7 @@ export function EvidencePanel() {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm text-foreground/80">
         {contentState === "empty" ? (
-          <p className="text-foreground/60">Select a timeline step with evidence to preview its payload.</p>
+          <p className="text-foreground/60">Select a step with evidence to preview its payload.</p>
         ) : null}
         {contentState === "loading" ? (
           <div className="space-y-3">

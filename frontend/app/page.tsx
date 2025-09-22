@@ -1,8 +1,8 @@
 import { Suspense } from "react";
 import { RunConsole } from "@/components/RunControls/RunConsole";
-import { TraceTimelinePanel } from "@/components/TraceTimeline/TraceTimelinePanel";
 import { StepDetailsPanel } from "@/components/TraceTimeline/StepDetailsPanel";
 import { EvidencePanel } from "@/components/EvidencePanel/EvidencePanel";
+import { RunWorkspace } from "@/components/RunControls/RunWorkspace";
 
 export default function HomePage() {
   return (
@@ -16,7 +16,7 @@ export default function HomePage() {
         <div className="flex min-w-0 flex-1 flex-row">
           <div className="flex min-w-0 flex-1 flex-col">
             <Suspense fallback={<div className="p-6 text-sm text-foreground/60">Loading timeline…</div>}>
-              <TraceTimelinePanel />
+              <RunWorkspace />
             </Suspense>
           </div>
           <Suspense fallback={null}>

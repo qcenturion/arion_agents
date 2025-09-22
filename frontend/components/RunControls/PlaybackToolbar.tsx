@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import clsx from "clsx";
 import { usePlaybackStore } from "@/stores/usePlaybackStore";
+import { useRunViewStore, type RunViewMode } from "@/stores/useRunViewStore";
 
 interface PlaybackToolbarProps {
   traceId: string;
@@ -16,6 +17,11 @@ const SPEED_OPTIONS: Array<{ label: string; value: 0.5 | 1 | 1.5 | 2 }> = [
   { label: "2×", value: 2 }
 ];
 
+const VIEW_OPTIONS: Array<{ label: string; value: RunViewMode }> = [
+  { label: "Timeline", value: "timeline" },
+  { label: "Graph", value: "graph" }
+];
+
 export function PlaybackToolbar({ traceId, onSeek }: PlaybackToolbarProps) {
   const status = usePlaybackStore((state) => state.status);
   const steps = usePlaybackStore((state) => state.steps);
@@ -24,6 +30,8 @@ export function PlaybackToolbar({ traceId, onSeek }: PlaybackToolbarProps) {
   const seekTo = usePlaybackStore((state) => state.seekTo);
   const speed = usePlaybackStore((state) => state.playbackSpeed);
   const setSpeed = usePlaybackStore((state) => state.setPlaybackSpeed);
+  const view = useRunViewStore((state) => state.view);
+  const setView = useRunViewStore((state) => state.setView);
 
   useEffect(() => {
     if (status !== "playing") {
@@ -111,6 +119,23 @@ export function PlaybackToolbar({ traceId, onSeek }: PlaybackToolbarProps) {
                   : "border border-white/10 text-foreground/60 hover:border-white/20"
               )}
               onClick={() => setSpeed(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 pl-3">
+          {VIEW_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={clsx(
+                "rounded px-2 py-1 text-xs",
+                view === option.value
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-white/10 text-foreground/60 hover:border-white/20"
+              )}
+              onClick={() => setView(option.value)}
             >
               {option.label}
             </button>

@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { fetchNetworkGraph, fetchNetworks, fetchSystemParamDefaults } from "@/lib/api/config";
 import { fetchRecentRuns, getRunSnapshot, triggerRun } from "@/lib/api/runs";
 import { usePlaybackStore } from "@/stores/usePlaybackStore";
+import { useRunViewStore } from "@/stores/useRunViewStore";
+import type { RunViewMode } from "@/stores/useRunViewStore";
 import type {
   ExecutionLogEntry,
   NetworkGraphResponse,
@@ -45,6 +48,8 @@ export function RunConsole() {
 
   const setInitialSteps = usePlaybackStore((state) => state.setInitialSteps);
   const resetPlayback = usePlaybackStore((state) => state.reset);
+  const view = useRunViewStore((state) => state.view);
+  const setView = useRunViewStore((state) => state.setView);
 
   const {
     data: networks,
@@ -215,6 +220,11 @@ export function RunConsole() {
     setSelectedRunId(null);
   };
 
+  const viewOptions: Array<{ label: string; value: RunViewMode }> = [
+    { label: "Timeline", value: "timeline" },
+    { label: "Graph", value: "graph" }
+  ];
+
   const networkOptionsList = useMemo(() => networks ?? [], [networks]);
 
   return (
@@ -224,6 +234,27 @@ export function RunConsole() {
         <p className="mt-2 text-sm text-foreground/60">
           Choose a network snapshot, supply system configuration, and provide an operator prompt. Runs execute against the orchestrator API and hydrate the timeline on completion.
         </p>
+      </div>
+
+      <div className="flex items-center justify-between rounded border border-white/10 bg-background/20 px-3 py-2">
+        <span className="text-xs uppercase tracking-wide text-foreground/50">Run View</span>
+        <div className="flex items-center gap-1">
+          {viewOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={clsx(
+                "rounded px-2 py-1 text-xs",
+                view === option.value
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-white/10 text-foreground/60 hover:border-white/20"
+              )}
+              onClick={() => setView(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="space-y-2">

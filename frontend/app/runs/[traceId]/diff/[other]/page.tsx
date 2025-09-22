@@ -19,23 +19,25 @@ export default async function RunDiffPage({ params }: RunDiffPageProps) {
     notFound();
   }
 
-  if (primary.graphVersionId !== secondary.graphVersionId) {
+  const primaryGraphVersionId = primary.graphVersionId ?? primary.metadata?.graph_version_key ?? undefined;
+  const secondaryGraphVersionId = secondary.graphVersionId ?? secondary.metadata?.graph_version_key ?? undefined;
+
+  if (primaryGraphVersionId !== secondaryGraphVersionId) {
     console.warn("Run diff requested for mismatched graph versions", {
-      primary: primary.graphVersionId,
-      secondary: secondary.graphVersionId
+      primary: primaryGraphVersionId,
+      secondary: secondaryGraphVersionId
     });
   }
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <TraceHeader traceId={params.traceId} graphVersionId={primary.graphVersionId} otherTraceId={params.other} />
+      <TraceHeader traceId={params.traceId} graphVersionId={primaryGraphVersionId} otherTraceId={params.other} />
       <Suspense fallback={<div className="p-6 text-sm text-foreground/60">Loading run diff…</div>}>
         <RunDiffViewer
           primaryTraceId={params.traceId}
           secondaryTraceId={params.other}
           primarySteps={primary.steps}
           secondarySteps={secondary.steps}
-          graphVersionId={primary.graphVersionId}
         />
       </Suspense>
       <DiffLegend />
