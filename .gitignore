@@ -74,3 +74,5 @@ venv.bak/
 logs/
 local_tests/
 *.db
+data/
+.model_cache

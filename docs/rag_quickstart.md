@@ -17,25 +17,26 @@ Keep a separate terminal open for each long-running process (API, RAG service).
 
 ## Start the RAG Service
 
+The dev service now persists vectors via an embedded Qdrant store. Mount the storage
+directory somewhere durable so restarts keep the index.
+
 ```bash
 # from repo root
-mkdir -p tools/rag_service
-# (service.py already lives here)
-docker run --rm -d \
-  --name rag-service \
-  -p 7100:80 \
-  -e MODULE_NAME=service \
-  -e VARIABLE_NAME=app \
-  -v "$(pwd)/tools/rag_service:/app" \
-  tiangolo/uvicorn-gunicorn-fastapi:python3.11
-
-# optional: tail logs in another tab
-# docker logs -f rag-service
+source .venv/bin/activate
+mkdir -p data/qdrant
+RAG_QDRANT_PATH="$(pwd)/data/qdrant" \
+RAG_COLLECTIONS=city_activities \
+uvicorn tools.rag_service.service:app --host 0.0.0.0 --port 7100
 ```
+
+> The service loads the `BAAI/bge-large-en` model by default. Set `RAG_EMBED_MODEL`
+> if you need something else, and ensure the storage path lives on a mounted volume
+> when running inside Docker.
 
 ## Index the Sample Corpus
 
-The service stores data in memory. Re-index whenever the container restarts.
+The service persists documents to the Qdrant store. Re-index only when the corpus
+changes or you explicitly reset the storage directory.
 
 ```bash
 source .venv/bin/activate
@@ -161,7 +162,7 @@ make rag-demo
 ## Reset / Cleanup
 
 - Stop the API (CTRL+C) and Postgres (`make db-down`) when done.
-- Stop the RAG service container (`docker stop rag-service`).
-- Re-run `tools/rag_index.py` anytime the service restarts or the corpus changes.
+- Stop the RAG service process when done.
+- Re-run `tools/rag_index.py` only when the corpus changes or you wipe `data/qdrant`.
 
 See `docs/workstreams/RAG_hybrid_search.md` for longer-term design notes and future work.

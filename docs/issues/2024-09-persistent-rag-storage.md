@@ -3,9 +3,9 @@
 **Date:** 2024-09-19
 
 ## Problem
-The dev RAG service (`tools/rag_service/service.py`) holds indexed documents in memory.
-Any container restart wipes the store, forcing us to re-run `tools/rag_index.py` before
-smoke tests. This slows the loop and hides bugs that only appear with cold caches.
+The dev RAG service (`tools/rag_service/service.py`) originally held indexed documents in
+memory. Any restart wiped the store, forcing us to re-run `tools/rag_index.py` before
+smoke tests. This slowed the loop and hid bugs that only appear with cold caches.
 
 ## Goals
 - Introduce durable storage (Qdrant with disk-backed volume or equivalent).
@@ -24,4 +24,10 @@ smoke tests. This slows the loop and hides bugs that only appear with cold cache
 ## Notes
 - Evaluate whether the runtime should call Qdrant directly (bypassing the service) once
   persistence is in place.
-- Ensure smoke tests still exist for the in-memory mode (useful for CI or offline runs).
+- Ensure smoke tests still exist for a fallback in-memory mode (useful for CI or offline runs).
+- The updated service runs Qdrant in embedded mode inside `service.py`, pointing it at a
+  configurable storage path (default `./data/qdrant`). Bind that directory as a volume when
+  starting the existing FastAPI container so data survives restarts.
+- If we later adopt a standalone Qdrant container, reuse the same storage directory and rely
+  on its write-ahead log for durability. Snapshots become optional unless we want manual
+  checkpoints.

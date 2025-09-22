@@ -49,64 +49,65 @@ def _load_documents(paths: List[Path], base_dir: Path, collection: str | None) -
     return documents
 
 
+import uuid
+
+# Create a consistent namespace for generating deterministic UUIDs from file paths
+_DOC_ID_NAMESPACE = uuid.UUID("a6b7a8b3-9e8d-4e6a-8f0c-9e9d8e7f6a5b")
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parse CLI arguments."""
+    parser = argparse.ArgumentParser(description="Index documents into the RAG service.")
+    parser.add_argument("corpus_path", type=Path, help="Path to a file or directory of files to index.")
+    parser.add_argument("--service-url", type=str, default=os.getenv("RAG_SERVICE_URL", "http://localhost:7100"), help="URL of the RAG service.")
+    parser.add_argument("--collection", type=str, default=None, help="Assign documents to this collection.")
+    parser.add_argument("--timeout", type=int, default=60, help="Request timeout in seconds.")
+    return parser.parse_args()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Send documents to the RAG service index API")
-    parser.add_argument("input", help="File or directory containing documents")
-    parser.add_argument("--service-url", required=True, help="Base URL for the RAG service")
-    parser.add_argument("--index-path", default="/index", help="Relative path for the index endpoint")
-    parser.add_argument(
-        "--patterns",
-        default="*.txt,*.md",
-        help="Comma-separated glob patterns when input is a directory",
-    )
-    parser.add_argument("--collection", default=None, help="Optional collection identifier")
-    parser.add_argument(
-        "--api-key", default=None, help="API key or token forwarded to the service"
-    )
-    parser.add_argument(
-        "--api-key-header",
-        default="Authorization",
-        help="Header name used for the API key",
-    )
-    parser.add_argument(
-        "--extra-payload",
-        default=None,
-        help="Additional JSON object merged into the index request",
-    )
-    parser.add_argument("--timeout", type=float, default=30.0, help="Request timeout")
-    args = parser.parse_args()
-
-    root = Path(args.input).expanduser().resolve()
-    if not root.exists():
-        print(f"Input path not found: {root}", file=sys.stderr)
-        sys.exit(2)
-
-    patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
-    files = _collect_files(root, patterns)
-    if not files:
-        print("No documents matched the given patterns", file=sys.stderr)
+    """Main entrypoint."""
+    args = _parse_args()
+    if not args.corpus_path.exists():
+        print(f"Corpus path not found: {args.corpus_path}")
         sys.exit(1)
 
-    documents = _load_documents(files, root if root.is_dir() else root.parent, args.collection)
+    if args.corpus_path.is_dir():
+        files = list(args.corpus_path.rglob("*.md"))
+        if not files:
+            print(f"No markdown files found in {args.corpus_path}")
+            sys.exit(1)
+    else:
+        files = [args.corpus_path]
+
+    documents = []
+    for file in files:
+        doc_id = str(file.relative_to(args.corpus_path.parent))
+        # Generate a deterministic UUIDv5 from the file-based ID
+        point_id = str(uuid.uuid5(_DOC_ID_NAMESPACE, doc_id))
+        doc = {
+            "id": point_id,
+            "text": file.read_text(),
+            "metadata": {"filename": file.name, "relative_path": doc_id},
+        }
+        if args.collection:
+            doc["collection"] = args.collection
+        documents.append(doc)
+
+    url = urljoin(args.service_url, "/index")
     payload = {"documents": documents}
-    if args.extra_payload:
-        try:
-            payload.update(json.loads(args.extra_payload))
-        except json.JSONDecodeError as exc:
-            print(f"Invalid JSON for --extra-payload: {exc}", file=sys.stderr)
-            sys.exit(3)
-
-    url = urljoin(args.service_url.rstrip("/") + "/", args.index_path.lstrip("/"))
     headers = {"Content-Type": "application/json"}
-    if args.api_key:
-        headers[args.api_key_header] = args.api_key
 
-    resp = requests.post(url, json=payload, headers=headers, timeout=args.timeout)
-    if resp.status_code >= 400:
-        print(f"Index request failed ({resp.status_code}): {resp.text}", file=sys.stderr)
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=args.timeout)
+        resp.raise_for_status()
+        result = resp.json()
+        print(f"Indexed {result.get('indexed', 0)} document(s) via {url}")
+    except requests.RequestException as e:
+        print(f"Index request failed ({e.response.status_code if e.response else 'N/A'}): {e}")
         sys.exit(4)
 
-    print(f"Indexed {len(documents)} document(s) via {url}")
+
 
 
 if __name__ == "__main__":
