@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { useCurrentStep } from "@/stores/usePlaybackStore";
+import { summarizeAgentPayload, summarizeToolPayload, type TimelineStatus } from "./stepSummaries";
 
 export function StepDetailsPanel() {
   const current = useCurrentStep();
@@ -61,11 +62,21 @@ function AgentStepDetail({ payload }: { payload: Record<string, unknown> }) {
   const raw = typeof payload.raw_response === "string" ? payload.raw_response : null;
   const decision = payload.decision_full ?? payload.decision;
   const timing = payload.timing as Record<string, unknown> | undefined;
+  const summary = summarizeAgentPayload(payload);
+  const statusTone = toneForStatus(summary.status);
   return (
     <div className="space-y-4">
-      <header>
+      <header className="space-y-1">
         <p className="text-xs uppercase tracking-wide text-foreground/50">Agent</p>
         <p className="font-mono text-sm text-foreground">{String(payload.agent_key ?? "agent")}</p>
+        <p className="text-xs text-foreground/60">Action · {summary.actionLabel}</p>
+        {summary.detailLabel ? (
+          <p className="text-[11px] text-foreground/50">{summary.detailLabel}</p>
+        ) : null}
+        <p className={`text-[11px] ${statusTone}`}>Status · {statusText(summary.status)}</p>
+        {summary.reasonLabel ? (
+          <p className="text-xs text-foreground/55">Reasoning · {summary.reasonLabel}</p>
+        ) : null}
       </header>
       {prompt ? (
         <section className="space-y-2">
@@ -99,12 +110,26 @@ function ToolStepDetail({ payload }: { payload: Record<string, unknown> }) {
   const timing = payload.timing as Record<string, unknown> | undefined;
   const requestPayload = payload.request_payload ?? payload.request_preview;
   const responsePayload = payload.response_payload ?? payload.response_preview;
+  const summary = summarizeToolPayload(payload);
+  const statusTone = toneForStatus(summary.status);
+  const statusValue = String(payload.status ?? "unknown");
+  const totalDuration = typeof payload.total_duration_ms === "number" ? payload.total_duration_ms : null;
   return (
     <div className="space-y-4">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wide text-foreground/50">Tool</p>
         <p className="font-mono text-sm text-foreground">{String(payload.tool_key ?? "tool")}</p>
-        <p className="text-xs text-foreground/60">Status · {String(payload.status ?? "unknown")}</p>
+        {summary.actorLabel ? (
+          <p className="text-[11px] text-foreground/50">{summary.actorLabel}</p>
+        ) : null}
+        <p className="text-xs text-foreground/60">Action · TOOL</p>
+        <p className={`text-[11px] ${statusTone}`}>Status · {statusValue}</p>
+        {summary.duration != null ? (
+          <p className="text-[11px] text-foreground/50">Duration · {summary.duration} ms</p>
+        ) : null}
+        {totalDuration != null ? (
+          <p className="text-[11px] text-foreground/45">Total duration · {totalDuration} ms</p>
+        ) : null}
       </header>
       {requestPayload ? (
         <section className="space-y-2">
@@ -165,5 +190,27 @@ function formatJson(value: unknown): string {
     return JSON.stringify(value, null, 2);
   } catch (error) {
     return String(value);
+  }
+}
+
+function statusText(status: TimelineStatus): string {
+  switch (status) {
+    case "success":
+      return "Success";
+    case "failure":
+      return "Failure";
+    default:
+      return "Unknown";
+  }
+}
+
+function toneForStatus(status: TimelineStatus): string {
+  switch (status) {
+    case "success":
+      return "text-emerald-400";
+    case "failure":
+      return "text-danger/80";
+    default:
+      return "text-foreground/45";
   }
 }

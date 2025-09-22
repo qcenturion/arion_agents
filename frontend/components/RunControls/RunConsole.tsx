@@ -8,6 +8,7 @@ import { fetchRecentRuns, getRunSnapshot, triggerRun } from "@/lib/api/runs";
 import { usePlaybackStore } from "@/stores/usePlaybackStore";
 import type {
   ExecutionLogEntry,
+  NetworkGraphResponse,
   NetworkSummary,
   RunEnvelope,
   RunMetadata,
@@ -20,6 +21,13 @@ interface SystemParamField {
   name: string;
   tools: string[];
   required: boolean;
+}
+
+interface ToolParamGroup {
+  toolKey: string;
+  displayName?: string | null;
+  description?: string | null;
+  systemParams: Array<{ name: string; required: boolean }>;
 }
 
 interface RunHistoryOption {
@@ -56,7 +64,10 @@ export function RunConsole() {
   });
 
   const {
-    data: networkGraph
+    data: networkGraph,
+    isFetching: networkGraphLoading,
+    isError: networkGraphError,
+    error: networkGraphErrorObj
   } = useQuery({
     queryKey: ["network-graph", selectedNetwork?.id],
     queryFn: () => fetchNetworkGraph(selectedNetwork!.id),
@@ -83,10 +94,18 @@ export function RunConsole() {
     enabled: Boolean(selectedRunId)
   });
 
-  const systemParamFields = useMemo<SystemParamField[]>(
-    () => extractSystemParamFields(networkGraph),
+  const { fields: systemParamFields, groups: toolParamGroups } = useMemo(
+    () => deriveSystemParamMetadata(networkGraph),
     [networkGraph]
   );
+
+  const systemFieldIndex = useMemo(() => {
+    const map = new Map<string, SystemParamField>();
+    for (const field of systemParamFields) {
+      map.set(field.name, field);
+    }
+    return map;
+  }, [systemParamFields]);
 
   const networksById = useMemo(() => {
     const map = new Map<number, NetworkSummary>();
@@ -239,41 +258,87 @@ export function RunConsole() {
         )}
       </div>
 
-      {systemParamFields.length ? (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wide text-foreground/50">System parameters</span>
-            <span className="text-[10px] uppercase tracking-wide text-foreground/40">Applied per tool</span>
-          </div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs uppercase tracking-wide text-foreground/50">Network tools</span>
+          <span className="text-[10px] uppercase tracking-wide text-foreground/40">
+            Override system parameters per run
+          </span>
+        </div>
+        {!selectedNetwork ? (
+          <p className="text-sm text-foreground/60">Select a network to view tool configuration.</p>
+        ) : networkGraphLoading ? (
+          <p className="text-sm text-foreground/60">Loading tools…</p>
+        ) : networkGraphError ? (
+          <p className="text-sm text-danger">
+            Failed to load tools: {formatErrorMessage(networkGraphErrorObj)}
+          </p>
+        ) : toolParamGroups.length ? (
           <div className="space-y-3">
-            {systemParamFields.map((field) => (
-              <div key={field.name} className="space-y-1">
-                <label className="flex flex-col text-xs font-medium uppercase tracking-wide text-foreground/50">
-                  <span>
-                    {field.name}
-                    {field.required ? <span className="ml-1 text-danger">*</span> : null}
-                  </span>
-                  <span className="mt-1 text-[10px] normal-case text-foreground/40">
-                    Tools: {field.tools.join(", ") || "runtime"}
-                  </span>
-                </label>
-                <input
-                  type="text"
-                  value={systemParams[field.name] ?? ""}
-                  onChange={(event) =>
-                    setSystemParams((prev) => ({ ...prev, [field.name]: event.target.value }))
-                  }
-                  className="w-full rounded border border-white/10 bg-background/30 px-3 py-2 text-sm text-foreground focus:border-primary/60 focus:outline-none"
-                  placeholder={systemDefaults?.[field.name] ?? ""}
-                />
-              </div>
+            {toolParamGroups.map((group) => (
+              <section
+                key={group.toolKey}
+                className="rounded-lg border border-white/10 bg-background/20 p-3"
+              >
+                <header className="space-y-1">
+                  <p className="text-sm font-semibold text-foreground">
+                    {group.displayName ?? group.toolKey}
+                  </p>
+                  <p className="text-xs font-mono uppercase tracking-wide text-foreground/50">
+                    {group.toolKey}
+                  </p>
+                  {group.description ? (
+                    <p className="text-xs text-foreground/55">{group.description}</p>
+                  ) : null}
+                </header>
+                {group.systemParams.length ? (
+                  <div className="mt-3 space-y-3">
+                    {group.systemParams.map((field) => {
+                      const meta = systemFieldIndex.get(field.name);
+                      const sharedTools = meta?.tools ?? [];
+                      const sharedLabel = sharedTools.length > 1 ? sharedTools.join(", ") : null;
+                      return (
+                        <div key={`${group.toolKey}-${field.name}`} className="space-y-1">
+                          <label className="flex items-center justify-between text-xs uppercase tracking-wide text-foreground/50">
+                            <span>
+                              {field.name}
+                              {field.required ? <span className="ml-1 text-danger">*</span> : null}
+                            </span>
+                            {systemDefaults?.[field.name] ? (
+                              <span className="text-[10px] normal-case text-foreground/40">
+                                Default: {systemDefaults[field.name]}
+                              </span>
+                            ) : null}
+                          </label>
+                          <input
+                            type="text"
+                            value={systemParams[field.name] ?? ""}
+                            onChange={(event) =>
+                              setSystemParams((prev) => ({ ...prev, [field.name]: event.target.value }))
+                            }
+                            className="w-full rounded border border-white/10 bg-background/30 px-3 py-2 text-sm text-foreground focus:border-primary/60 focus:outline-none"
+                            placeholder={systemDefaults?.[field.name] ?? ""}
+                          />
+                          {sharedLabel ? (
+                            <p className="text-[10px] text-foreground/40">Applies to: {sharedLabel}</p>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-foreground/45">No system parameters for this tool.</p>
+                )}
+              </section>
             ))}
           </div>
-          {missingRequired ? (
-            <p className="text-xs text-warning/80">Fill all required fields before running.</p>
-          ) : null}
-        </div>
-      ) : null}
+        ) : (
+          <p className="text-sm text-foreground/60">No tools configured for this network.</p>
+        )}
+        {missingRequired && systemParamFields.length ? (
+          <p className="text-xs text-warning/80">Fill all required fields before running.</p>
+        ) : null}
+      </div>
 
       <div className="space-y-2">
         <label htmlFor="prompt" className="text-xs uppercase tracking-wide text-foreground/50">
@@ -396,44 +461,117 @@ function normalizeExecutionLog(entries: ExecutionLogEntry[], traceId: string): R
   }));
 }
 
-function extractSystemParamFields(graph: any): SystemParamField[] {
-  if (!graph || !Array.isArray(graph?.agents) || !Array.isArray(graph?.tools)) {
-    return [];
+function deriveSystemParamMetadata(graph: NetworkGraphResponse | undefined): {
+  fields: SystemParamField[];
+  groups: ToolParamGroup[];
+} {
+  if (!graph) {
+    return { fields: [], groups: [] };
   }
-  const defaultAgent = graph.agents.find((agent: any) => agent.is_default) ?? graph.agents[0];
-  if (!defaultAgent || !Array.isArray(defaultAgent.equipped_tools)) {
-    return [];
+
+  const agents = Array.isArray(graph.agents) ? graph.agents : [];
+  const tools = Array.isArray(graph.tools) ? graph.tools : [];
+
+  if (!agents.length && !tools.length) {
+    return { fields: [], groups: [] };
   }
-  const toolIndex = new Map<string, any>();
-  for (const tool of graph.tools) {
+
+  const defaultAgent = agents.find((agent) => agent.is_default) ?? agents[0];
+  const equippedKeysRaw = Array.isArray(defaultAgent?.equipped_tools)
+    ? defaultAgent?.equipped_tools ?? []
+    : tools.map((tool) => tool.key);
+
+  const equippedKeys = Array.from(
+    new Set(
+      (equippedKeysRaw ?? [])
+        .map((key) => String(key ?? "").trim())
+        .filter((key) => key.length)
+    )
+  );
+
+  const toolIndex = new Map<string, NetworkGraphResponse["tools"][number]>();
+  for (const tool of tools) {
     if (tool?.key) {
       toolIndex.set(String(tool.key).toLowerCase(), tool);
     }
   }
+
   const accumulator = new Map<string, SystemParamField>();
-  for (const rawKey of defaultAgent.equipped_tools) {
-    const key = String(rawKey ?? "").toLowerCase();
+  const groups: ToolParamGroup[] = [];
+
+  for (const rawKey of equippedKeys) {
+    const key = rawKey.toLowerCase();
     const tool = toolIndex.get(key);
     if (!tool) continue;
-    const paramsSchema = tool.params_schema ?? {};
+
+    const paramsSchema = (tool.params_schema ?? {}) as Record<string, unknown>;
+    const systemParams: Array<{ name: string; required: boolean }> = [];
+
     Object.entries(paramsSchema).forEach(([paramName, schema]) => {
-      const spec = (schema as Record<string, unknown>) ?? {};
-      if ((spec.source ?? "agent") !== "system") {
+      const spec = (schema as { source?: unknown; required?: unknown }) ?? {};
+      const source = typeof spec.source === "string" ? spec.source : undefined;
+      if ((source ?? "agent") !== "system") {
         return;
       }
+      const required = Boolean(spec.required);
+      systemParams.push({ name: paramName, required });
       const field = accumulator.get(paramName) ?? {
         name: paramName,
         tools: [],
         required: false
       };
-      field.required = field.required || Boolean(spec.required);
+      field.required = field.required || required;
       if (!field.tools.includes(tool.key)) {
         field.tools.push(tool.key);
       }
       accumulator.set(paramName, field);
     });
+
+    groups.push({
+      toolKey: tool.key,
+      displayName: tool.display_name,
+      description: tool.description,
+      systemParams
+    });
   }
-  return Array.from(accumulator.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Include remaining tools that were not in equipped_keys so operators still see coverage.
+  for (const tool of tools) {
+    if (!tool?.key) continue;
+    if (equippedKeys.some((key) => key.toLowerCase() === tool.key.toLowerCase())) {
+      continue;
+    }
+    const paramsSchema = (tool.params_schema ?? {}) as Record<string, unknown>;
+    const systemParams: Array<{ name: string; required: boolean }> = [];
+    Object.entries(paramsSchema).forEach(([paramName, schema]) => {
+      const spec = (schema as { source?: unknown; required?: unknown }) ?? {};
+      const source = typeof spec.source === "string" ? spec.source : undefined;
+      if ((source ?? "agent") !== "system") {
+        return;
+      }
+      const required = Boolean(spec.required);
+      systemParams.push({ name: paramName, required });
+      const field = accumulator.get(paramName) ?? {
+        name: paramName,
+        tools: [],
+        required: false
+      };
+      field.required = field.required || required;
+      if (!field.tools.includes(tool.key)) {
+        field.tools.push(tool.key);
+      }
+      accumulator.set(paramName, field);
+    });
+    groups.push({
+      toolKey: tool.key,
+      displayName: tool.display_name,
+      description: tool.description,
+      systemParams
+    });
+  }
+
+  const fields = Array.from(accumulator.values()).sort((a, b) => a.name.localeCompare(b.name));
+  return { fields, groups };
 }
 
 function shallowEqualRecord(a: Record<string, string>, b: Record<string, string>): boolean {
@@ -450,4 +588,14 @@ function generateLocalTraceId() {
     return crypto.randomUUID();
   }
   return `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "unknown error";
 }

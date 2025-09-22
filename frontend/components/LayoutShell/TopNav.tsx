@@ -17,7 +17,7 @@ export function TopNav() {
     <header className="sticky top-0 z-40 border-b border-white/5 bg-background/60 backdrop-blur">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
         <Link href="/" className="font-semibold tracking-tight text-xl">
-          arion control plane
+          Arion Control Plane
         </Link>
         <nav className="flex items-center gap-6 text-sm font-medium">
           {NAV_ITEMS.map((item) => {
