@@ -14,10 +14,10 @@ from arion_agents.prompts.context_builder import (
     build_route_definitions,
 )
 from arion_agents.orchestrator import RunConfig, execute_instruction
-from arion_agents.llm import gemini_decide
+from arion_agents.llm import GeminiDecideResult, gemini_decide
 
 
-DecideFn = Callable[[str, Optional[str]], tuple[str, Optional[AgentDecision]]]
+DecideFn = Callable[[str, Optional[str]], GeminiDecideResult]
 
 
 def run_loop(
@@ -31,7 +31,7 @@ def run_loop(
     debug: bool = False,
 ) -> Dict[str, Any]:
     logger = logging.getLogger("arion_agents.engine.loop")
-    decide = decide_fn or (lambda prompt, m: gemini_decide(prompt, m))
+    decide = decide_fn or gemini_decide
 
     run_perf_start = time.perf_counter()
     run_started_at_ms = int(time.time() * 1000)
@@ -54,6 +54,19 @@ def run_loop(
             "started_at_ms": run_started_at_ms,
             "completed_at_ms": completed_at_ms,
         }
+
+    total_prompt_tokens = 0
+    total_response_tokens = 0
+    total_tokens = 0
+    aggregate_usage: Optional[Dict[str, int]] = None
+
+    def _safe_int(value: Any) -> int:
+        try:
+            if value is None:
+                return 0
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     while step < max_steps:
         cfg = get_cfg(current_agent)
@@ -96,7 +109,29 @@ def run_loop(
 
         llm_started_at_ms = int(time.time() * 1000)
         llm_perf_start = time.perf_counter()
-        text, parsed = decide(prompt, model)
+        llm_result = decide(prompt, model)
+        text = llm_result.text
+        parsed = llm_result.parsed
+        llm_usage = llm_result.usage
+        llm_usage_raw = llm_result.usage_raw
+        llm_response_payload = llm_result.response_payload
+        cumulative_usage: Optional[Dict[str, int]] = aggregate_usage
+        if llm_usage:
+            step_prompt_tokens = _safe_int(llm_usage.get("prompt_tokens"))
+            step_response_tokens = _safe_int(llm_usage.get("response_tokens"))
+            step_total_tokens_raw = llm_usage.get("total_tokens")
+            step_total_tokens = _safe_int(step_total_tokens_raw)
+            if step_total_tokens == 0:
+                step_total_tokens = step_prompt_tokens + step_response_tokens
+            total_prompt_tokens += step_prompt_tokens
+            total_response_tokens += step_response_tokens
+            total_tokens += step_total_tokens
+            aggregate_usage = {
+                "prompt_tokens": total_prompt_tokens,
+                "response_tokens": total_response_tokens,
+                "total_tokens": total_tokens,
+            }
+            cumulative_usage = aggregate_usage
         llm_duration_ms = int((time.perf_counter() - llm_perf_start) * 1000)
         llm_completed_at_ms = llm_started_at_ms + llm_duration_ms
         decision = parsed or AgentDecision.model_validate_json(text)
@@ -147,6 +182,10 @@ def run_loop(
             llm_started_at_ms=llm_started_at_ms,
             llm_duration_ms=llm_duration_ms,
             llm_completed_at_ms=llm_completed_at_ms,
+            llm_usage=llm_usage,
+            llm_usage_raw=llm_usage_raw,
+            llm_response_payload=llm_response_payload,
+            llm_usage_cumulative=cumulative_usage,
         )
         step_summary: Dict[str, Any] = {
             "step": step,
@@ -159,6 +198,20 @@ def run_loop(
             "llm_started_at_ms": llm_started_at_ms,
             "llm_completed_at_ms": llm_completed_at_ms,
         }
+        if llm_usage:
+            step_summary["llm_prompt_tokens"] = llm_usage.get("prompt_tokens")
+            step_summary["llm_response_tokens"] = llm_usage.get("response_tokens")
+            step_summary["llm_total_tokens"] = llm_usage.get("total_tokens")
+        if cumulative_usage:
+            step_summary["llm_prompt_tokens_total"] = cumulative_usage.get(
+                "prompt_tokens"
+            )
+            step_summary["llm_response_tokens_total"] = cumulative_usage.get(
+                "response_tokens"
+            )
+            step_summary["llm_total_tokens_total"] = cumulative_usage.get(
+                "total_tokens"
+            )
         step_summary["result_status"] = res.status
         step_summaries.append(step_summary)
 
@@ -177,6 +230,9 @@ def run_loop(
         next_seq += 1
 
         if instr.action.type == "RESPOND":
+            run_duration_ms = int((time.perf_counter() - run_perf_start) * 1000)
+            step_summary["run_duration_ms"] = run_duration_ms
+            agent_entry["run_duration_ms"] = run_duration_ms
             out = {
                 "final": res.model_dump(),
                 "execution_log": exec_log.to_list(),
@@ -186,6 +242,9 @@ def run_loop(
             }
             out["latency"] = _latency_payload()
             out["tool_log"] = tool_log.store
+            if aggregate_usage:
+                out["llm_usage_totals"] = aggregate_usage
+            out["run_duration_ms"] = run_duration_ms
             return out
         elif instr.action.type == "USE_TOOL":
             # res.response structure includes tool, params, result, duration_ms
@@ -284,6 +343,8 @@ def run_loop(
         "debug": debug_steps if debug else None,
         "step_events": step_events,
     }
+    run_duration_ms = int((time.perf_counter() - run_perf_start) * 1000)
     out["latency"] = _latency_payload()
     out["tool_log"] = tool_log.store
+    out["run_duration_ms"] = run_duration_ms
     return out

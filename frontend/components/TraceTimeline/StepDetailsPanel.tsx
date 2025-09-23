@@ -62,6 +62,12 @@ function AgentStepDetail({ payload }: { payload: Record<string, unknown> }) {
   const raw = typeof payload.raw_response === "string" ? payload.raw_response : null;
   const decision = payload.decision_full ?? payload.decision;
   const timing = payload.timing as Record<string, unknown> | undefined;
+  const tokenUsage = extractTokenUsage(payload);
+  const perStepUsage = tokenUsage?.step ?? null;
+  const totalUsage = tokenUsage?.cumulative ?? null;
+  const runDurationMs = typeof payload.run_duration_ms === "number" ? payload.run_duration_ms : null;
+  const actionType = computeActionType(decision);
+  const showRunSummary = actionType === "RESPOND" && (totalUsage || runDurationMs != null);
   const summary = summarizeAgentPayload(payload);
   const statusTone = toneForStatus(summary.status);
   return (
@@ -100,6 +106,18 @@ function AgentStepDetail({ payload }: { payload: Record<string, unknown> }) {
         <section className="space-y-2">
           <h3 className="text-xs uppercase tracking-wide text-foreground/50">Timing (ms)</h3>
           <KeyValueTable data={timing} />
+        </section>
+      ) : null}
+      {perStepUsage ? (
+        <section className="space-y-2">
+          <h3 className="text-xs uppercase tracking-wide text-foreground/50">Token usage</h3>
+          <KeyValueTable data={perStepUsage} />
+        </section>
+      ) : null}
+      {showRunSummary ? (
+        <section className="space-y-2">
+          <h3 className="text-xs uppercase tracking-wide text-foreground/50">Run totals</h3>
+          <KeyValueTable data={buildRunSummary(totalUsage, runDurationMs)} />
         </section>
       ) : null}
     </div>
@@ -191,6 +209,66 @@ function formatJson(value: unknown): string {
   } catch (error) {
     return String(value);
   }
+}
+
+interface TokenUsageSections {
+  step: Record<string, unknown> | null;
+  cumulative: Record<string, unknown> | null;
+}
+
+function extractTokenUsage(payload: Record<string, unknown> | undefined): TokenUsageSections | null {
+  if (!payload) return null;
+  const usage = payload.llm_usage as Record<string, unknown> | undefined;
+  const cumulative = payload.llm_usage_cumulative as Record<string, unknown> | undefined;
+  const step = buildUsageRecord(usage);
+  const total = buildUsageRecord(cumulative);
+  if (!step && !total) return null;
+  return { step, cumulative: total };
+}
+
+function buildUsageRecord(source: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!source) return null;
+  const prompt = coerceToNumber(source.prompt_tokens);
+  const response = coerceToNumber(source.response_tokens);
+  const total = coerceToNumber(source.total_tokens);
+  const data: Record<string, unknown> = {};
+  if (prompt != null) data.prompt_tokens = prompt;
+  if (response != null) data.response_tokens = response;
+  if (total != null) data.total_tokens = total;
+  else if (prompt != null && response != null) data.total_tokens = prompt + response;
+  return Object.keys(data).length ? data : null;
+}
+
+function buildRunSummary(
+  totalUsage: Record<string, unknown> | null,
+  runDurationMs: number | null
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  if (totalUsage) {
+    Object.assign(data, totalUsage);
+  }
+  if (runDurationMs != null) {
+    data.run_duration_ms = runDurationMs;
+  }
+  return data;
+}
+
+function computeActionType(decision: unknown): string | null {
+  if (typeof decision !== "object" || decision === null) return null;
+  const maybeAction = (decision as Record<string, unknown>).action;
+  if (typeof maybeAction === "string") {
+    return maybeAction.toUpperCase();
+  }
+  return null;
+}
+
+function coerceToNumber(value: unknown): number | null {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim().length) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function statusText(status: TimelineStatus): string {

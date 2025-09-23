@@ -41,6 +41,10 @@ class ExecutionLog:
         llm_started_at_ms: Optional[int] = None,
         llm_duration_ms: Optional[int] = None,
         llm_completed_at_ms: Optional[int] = None,
+        llm_usage: Optional[Dict[str, int]] = None,
+        llm_usage_raw: Optional[Dict[str, Any]] = None,
+        llm_response_payload: Optional[Any] = None,
+        llm_usage_cumulative: Optional[Dict[str, int]] = None,
     ) -> None:
         payload: Dict[str, Any] = {
             "type": "agent",
@@ -62,8 +66,16 @@ class ExecutionLog:
             payload["prompt"] = prompt
         if raw_response is not None:
             payload["raw_response"] = raw_response
+        if llm_response_payload is not None:
+            payload["llm_response_payload"] = llm_response_payload
         if decision_full is not None:
             payload["decision_full"] = decision_full
+        if llm_usage is not None:
+            payload["llm_usage"] = llm_usage
+        if llm_usage_raw is not None:
+            payload["llm_usage_raw"] = llm_usage_raw
+        if llm_usage_cumulative is not None:
+            payload["llm_usage_cumulative"] = llm_usage_cumulative
         timing: Dict[str, Any] = {}
         if step_started_at_ms is not None:
             timing["step_started_at_ms"] = step_started_at_ms

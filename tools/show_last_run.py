@@ -2,7 +2,6 @@
 """Display the latest /run artifact with prompts, LLM output, tool calls, and final response."""
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -34,6 +33,12 @@ def main() -> None:
     debug = payload.get("response", {}).get("debug") or payload.get("debug")
     tool_log = payload.get("response", {}).get("tool_log") or payload.get("tool_log")
     latency = payload.get("response", {}).get("latency") or payload.get("latency")
+    llm_totals = payload.get("response", {}).get("llm_usage_totals") or payload.get(
+        "llm_usage_totals"
+    )
+    run_duration_ms = payload.get("response", {}).get("run_duration_ms") or payload.get(
+        "run_duration_ms"
+    )
 
     _print_header("Final Response")
     print(json.dumps(final, indent=2))
@@ -73,6 +78,25 @@ def main() -> None:
             print(f"Step {step_num} ({agent} → {action}): {detail}")
         if isinstance(total_ms, (int, float)):
             print(f"Total Run Time: {total_ms / 1000.0:.3f}s")
+
+    if isinstance(llm_totals, dict):
+        _print_header("LLM Token Totals")
+        prompt = llm_totals.get("prompt_tokens")
+        response = llm_totals.get("response_tokens")
+        total = llm_totals.get("total_tokens")
+        parts = []
+        if isinstance(prompt, int):
+            parts.append(f"prompt={prompt}")
+        if isinstance(response, int):
+            parts.append(f"response={response}")
+        if isinstance(total, int):
+            parts.append(f"total={total}")
+        print(", ".join(parts) if parts else json.dumps(llm_totals, indent=2))
+
+    if isinstance(run_duration_ms, int):
+        _print_header("Run Duration")
+        seconds = run_duration_ms / 1000.0
+        print(f"{run_duration_ms} ms ({seconds:.3f}s)")
 
     _print_header("Execution Log")
     print(json.dumps(exec_log, indent=2))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -22,6 +23,42 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_GEMINI_MODEL_CATALOG = [
+    {
+        "key": "gemini-2.5-pro",
+        "label": "Gemini 2.5 Pro",
+        "inputs": "Audio, images, videos, text, and PDF",
+        "output": "Text",
+        "optimized_for": "Enhanced reasoning, multimodal understanding, advanced coding",
+    },
+    {
+        "key": "gemini-2.5-flash",
+        "label": "Gemini 2.5 Flash",
+        "inputs": "Audio, images, videos, and text",
+        "output": "Text",
+        "optimized_for": "Adaptive thinking with cost efficiency",
+    },
+    {
+        "key": "gemini-2.5-flash-lite",
+        "label": "Gemini 2.5 Flash-Lite",
+        "inputs": "Audio, images, videos, and text",
+        "output": "Text",
+        "optimized_for": "Ultra low latency and lightweight cost-sensitive tasks",
+    },
+]
+
+
+@router.get("/llm/models")
+def list_llm_models() -> list[dict]:
+    default_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    items: list[dict] = []
+    for item in _GEMINI_MODEL_CATALOG:
+        enriched = dict(item)
+        enriched["is_default"] = enriched.get("key") == default_model
+        items.append(enriched)
+    return items
+
+
 def get_db_dep() -> Session:
     # SQLModel Session is directly usable as a context manager
     with get_session() as s:
@@ -32,7 +69,6 @@ def _lc(s: str) -> str:
     return s.strip().lower()
 
 
-
 @router.get("/system_params/defaults")
 def get_system_param_defaults() -> dict:
     return available_system_param_keys()
@@ -40,6 +76,7 @@ def get_system_param_defaults() -> dict:
 
 # Define Pydantic models for API input/output where they differ from the DB model.
 # For simple cases, we can use the SQLModel directly.
+
 
 class AgentCreate(SQLModel):
     key: str
@@ -53,6 +90,7 @@ class AgentCreate(SQLModel):
 
 class AgentOut(SQLModel):
     """API output model for an Agent, including computed fields."""
+
     id: int
     key: str
     display_name: Optional[str]
@@ -168,6 +206,7 @@ def create_tool(payload: ToolCreate, db: Session = Depends(get_db_dep)):
     db.refresh(t)
     return _to_tool_out(t)
 
+
 @router.patch("/tools/{tool_id}", response_model=ToolOut)
 def patch_tool(tool_id: int, payload: ToolUpdate, db: Session = Depends(get_db_dep)):
     t = db.get(Tool, tool_id)
@@ -185,7 +224,9 @@ def patch_tool(tool_id: int, payload: ToolUpdate, db: Session = Depends(get_db_d
         t.secret_ref = payload.secret_ref
     if payload.additional_data is not None:
         addl = payload.additional_data or {}
-        schema = addl.get("agent_params_json_schema") if isinstance(addl, dict) else None
+        schema = (
+            addl.get("agent_params_json_schema") if isinstance(addl, dict) else None
+        )
         if not isinstance(schema, dict):
             raise HTTPException(
                 status_code=400,
@@ -197,13 +238,16 @@ def patch_tool(tool_id: int, payload: ToolUpdate, db: Session = Depends(get_db_d
     db.refresh(t)
     return _to_tool_out(t)
 
+
 @router.delete("/tools/{tool_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_tool(tool_id: int, db: Session = Depends(get_db_dep)):
     tool = db.get(Tool, tool_id)
     if not tool:
         raise HTTPException(status_code=404, detail="tool not found")
     # Check if this tool is in use by any networks
-    usage_count = db.exec(select(func.count(NetworkTool.id)).where(NetworkTool.source_tool_id == tool_id)).one()
+    usage_count = db.exec(
+        select(func.count(NetworkTool.id)).where(NetworkTool.source_tool_id == tool_id)
+    ).one()
     if usage_count > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -214,7 +258,9 @@ def delete_tool(tool_id: int, db: Session = Depends(get_db_dep)):
 
 
 @router.post("/tools/{tool_id}/test_connection", response_model=ToolTestResponse)
-def test_tool_connection(tool_id: int, payload: ToolTestRequest, db: Session = Depends(get_db_dep)):
+def test_tool_connection(
+    tool_id: int, payload: ToolTestRequest, db: Session = Depends(get_db_dep)
+):
     t = db.get(Tool, tool_id)
     if not t:
         raise HTTPException(status_code=404, detail="tool not found")
@@ -234,7 +280,13 @@ def test_tool_connection(tool_id: int, payload: ToolTestRequest, db: Session = D
             metadata=meta,
         )
         tool = instantiate_tool(cfg, resolve_secret(t.secret_ref))
-        out = tool.run(ToolRunInput(params=payload.params or {}, system=payload.system_params or {}, metadata=meta))
+        out = tool.run(
+            ToolRunInput(
+                params=payload.params or {},
+                system=payload.system_params or {},
+                metadata=meta,
+            )
+        )
         if out.ok:
             return ToolTestResponse(ok=True, status=200, result=out.result)
         return ToolTestResponse(ok=False, status=502, error=out.error)
@@ -244,7 +296,9 @@ def test_tool_connection(tool_id: int, payload: ToolTestRequest, db: Session = D
 
 @router.post("/networks", response_model=Network, status_code=status.HTTP_201_CREATED)
 def create_network(payload: Network, db: Session = Depends(get_db_dep)):
-    if db.exec(select(Network).where(func.lower(Network.name) == _lc(payload.name))).first():
+    if db.exec(
+        select(Network).where(func.lower(Network.name) == _lc(payload.name))
+    ).first():
         raise HTTPException(status_code=409, detail="network name exists")
     payload.status = "draft"
     db.add(payload)
@@ -256,6 +310,7 @@ def create_network(payload: Network, db: Session = Depends(get_db_dep)):
 @router.get("/networks", response_model=List[Network])
 def list_networks(db: Session = Depends(get_db_dep)):
     return db.exec(select(Network)).all()
+
 
 @router.get("/networks/{network_id}/graph")
 def get_network_graph(network_id: int, db: Session = Depends(get_db_dep)):
@@ -277,7 +332,9 @@ def get_network_graph(network_id: int, db: Session = Depends(get_db_dep)):
                 "is_default": a.is_default,
                 "equipped_tools": [t.key for t in a.equipped_tools],
                 "allowed_routes": [r.key for r in a.allowed_routes],
-                "prompt_template": (a.additional_data or {}).get("prompt_template") if isinstance(a.additional_data, dict) else None,
+                "prompt_template": (a.additional_data or {}).get("prompt_template")
+                if isinstance(a.additional_data, dict)
+                else None,
             }
         )
         for r in a.allowed_routes:
@@ -299,7 +356,12 @@ def get_network_graph(network_id: int, db: Session = Depends(get_db_dep)):
     ]
 
     return {
-        "network": {"id": net.id, "name": net.name, "status": net.status, "description": net.description},
+        "network": {
+            "id": net.id,
+            "name": net.name,
+            "status": net.status,
+            "description": net.description,
+        },
         "agents": agent_nodes,
         "tools": tools,
         "adjacency": adjacency,
@@ -314,13 +376,19 @@ class NetworkUpdate(SQLModel):
 
 
 @router.patch("/networks/{network_id}", response_model=Network)
-def patch_network(network_id: int, payload: NetworkUpdate, db: Session = Depends(get_db_dep)):
+def patch_network(
+    network_id: int, payload: NetworkUpdate, db: Session = Depends(get_db_dep)
+):
     net = db.get(Network, network_id)
     if not net:
         raise HTTPException(status_code=404, detail="network not found")
     if payload.name is not None:
         # uniqueness check (case-insensitive)
-        exists = db.exec(select(Network).where(Network.id != network_id, func.lower(Network.name) == _lc(payload.name))).first()
+        exists = db.exec(
+            select(Network).where(
+                Network.id != network_id, func.lower(Network.name) == _lc(payload.name)
+            )
+        ).first()
         if exists:
             raise HTTPException(status_code=409, detail="network name exists")
         net.name = payload.name
@@ -349,26 +417,32 @@ def delete_network(network_id: int, db: Session = Depends(get_db_dep)):
 
 
 @router.post("/networks/{network_id}/tools", response_model=List[str])
-def add_tools_to_network(network_id: int, payload: SetTools, db: Session = Depends(get_db_dep)):
+def add_tools_to_network(
+    network_id: int, payload: SetTools, db: Session = Depends(get_db_dep)
+):
     net = db.get(Network, network_id)
     if not net:
         raise HTTPException(status_code=404, detail="network not found")
     if not payload.tool_keys:
         return []
-    
+
     keys = [_lc(k) for k in payload.tool_keys]
     globals_ = db.exec(select(Tool).where(func.lower(Tool.key).in_(keys))).all()
     found = {g.key.lower(): g for g in globals_}
     missing = sorted(set(keys) - set(found.keys()))
     if missing:
-        raise HTTPException(status_code=400, detail=f"unknown tool keys: {', '.join(missing)}")
+        raise HTTPException(
+            status_code=400, detail=f"unknown tool keys: {', '.join(missing)}"
+        )
 
     created_keys: List[str] = []
     for k in keys:
         g = found[k]
         # Enforce that the global tool includes agent_params_json_schema
         addl = g.additional_data or {}
-        schema = addl.get("agent_params_json_schema") if isinstance(addl, dict) else None
+        schema = (
+            addl.get("agent_params_json_schema") if isinstance(addl, dict) else None
+        )
         if not isinstance(schema, dict):
             raise HTTPException(
                 status_code=400,
@@ -381,7 +455,9 @@ def add_tools_to_network(network_id: int, payload: SetTools, db: Session = Depen
             )
         ).first()
         if exists:
-            logger.debug("NetworkTool exists; skipping: network_id=%s key=%s", network_id, k)
+            logger.debug(
+                "NetworkTool exists; skipping: network_id=%s key=%s", network_id, k
+            )
             continue
         nt = NetworkTool(
             network_id=network_id,
@@ -446,9 +522,17 @@ class NetworkToolPatch(BaseModel):
 
 
 @router.patch("/networks/{network_id}/tools/{key}", response_model=NetworkToolOut)
-def patch_network_tool(network_id: int, key: str, payload: NetworkToolPatch, db: Session = Depends(get_db_dep)):
+def patch_network_tool(
+    network_id: int,
+    key: str,
+    payload: NetworkToolPatch,
+    db: Session = Depends(get_db_dep),
+):
     nt = db.exec(
-        select(NetworkTool).where(NetworkTool.network_id == network_id, func.lower(NetworkTool.key) == _lc(key))
+        select(NetworkTool).where(
+            NetworkTool.network_id == network_id,
+            func.lower(NetworkTool.key) == _lc(key),
+        )
     ).first()
     if not nt:
         raise HTTPException(status_code=404, detail="network tool not found")
@@ -462,10 +546,15 @@ def patch_network_tool(network_id: int, key: str, payload: NetworkToolPatch, db:
     return _to_network_tool_out(nt)
 
 
-@router.delete("/networks/{network_id}/tools/{key}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/networks/{network_id}/tools/{key}", status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_network_tool(network_id: int, key: str, db: Session = Depends(get_db_dep)):
     nt = db.exec(
-        select(NetworkTool).where(NetworkTool.network_id == network_id, func.lower(NetworkTool.key) == _lc(key))
+        select(NetworkTool).where(
+            NetworkTool.network_id == network_id,
+            func.lower(NetworkTool.key) == _lc(key),
+        )
     ).first()
     if not nt:
         raise HTTPException(status_code=404, detail="network tool not found")
@@ -485,13 +574,23 @@ def _resolve_agent_out(agent: Agent) -> AgentOut:
     )
 
 
-@router.post("/networks/{network_id}/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
-def create_agent(network_id: int, payload: AgentCreate, db: Session = Depends(get_db_dep)):
+@router.post(
+    "/networks/{network_id}/agents",
+    response_model=AgentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_agent(
+    network_id: int, payload: AgentCreate, db: Session = Depends(get_db_dep)
+):
     if not db.get(Network, network_id):
         raise HTTPException(status_code=404, detail="network not found")
-    if db.exec(select(Agent).where(Agent.network_id == network_id, func.lower(Agent.key) == _lc(payload.key))).first():
+    if db.exec(
+        select(Agent).where(
+            Agent.network_id == network_id, func.lower(Agent.key) == _lc(payload.key)
+        )
+    ).first():
         raise HTTPException(status_code=409, detail="agent key exists")
-    
+
     # Construct explicitly to satisfy required FK at validation time
     addl = payload.additional_data or {}
     if payload.prompt_template:
@@ -521,7 +620,12 @@ class AgentUpdate(SQLModel):
 
 
 @router.patch("/networks/{network_id}/agents/{agent_id}", response_model=AgentOut)
-def patch_agent(network_id: int, agent_id: int, payload: AgentUpdate, db: Session = Depends(get_db_dep)):
+def patch_agent(
+    network_id: int,
+    agent_id: int,
+    payload: AgentUpdate,
+    db: Session = Depends(get_db_dep),
+):
     a = db.get(Agent, agent_id)
     if not a or a.network_id != network_id:
         raise HTTPException(status_code=404, detail="agent not found")
@@ -540,6 +644,7 @@ def patch_agent(network_id: int, agent_id: int, payload: AgentUpdate, db: Sessio
     db.refresh(a)
     return _resolve_agent_out(a)
 
+
 @router.get("/networks/{network_id}/agents", response_model=List[AgentOut])
 def list_agents(network_id: int, db: Session = Depends(get_db_dep)):
     if not db.get(Network, network_id):
@@ -556,7 +661,9 @@ def get_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_dep))
     return _resolve_agent_out(a)
 
 
-@router.delete("/networks/{network_id}/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/networks/{network_id}/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_dep)):
     a = db.get(Agent, agent_id)
     if not a or a.network_id != network_id:
@@ -566,18 +673,28 @@ def delete_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_de
 
 
 @router.put("/networks/{network_id}/agents/{agent_id}/tools", response_model=AgentOut)
-def set_agent_tools(network_id: int, agent_id: int, payload: SetTools, db: Session = Depends(get_db_dep)):
+def set_agent_tools(
+    network_id: int, agent_id: int, payload: SetTools, db: Session = Depends(get_db_dep)
+):
     a = db.get(Agent, agent_id)
     if not a or a.network_id != network_id:
         raise HTTPException(status_code=404, detail="agent not found")
-    
+
     keys = [_lc(k) for k in payload.tool_keys]
     if keys:
-        nts = db.exec(select(NetworkTool).where(NetworkTool.network_id == network_id, func.lower(NetworkTool.key).in_(keys))).all()
+        nts = db.exec(
+            select(NetworkTool).where(
+                NetworkTool.network_id == network_id,
+                func.lower(NetworkTool.key).in_(keys),
+            )
+        ).all()
         found = {t.key.lower() for t in nts}
         missing = sorted(set(keys) - found)
         if missing:
-            raise HTTPException(status_code=400, detail=f"unknown network tool keys: {', '.join(missing)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown network tool keys: {', '.join(missing)}",
+            )
         a.equipped_tools = nts
     else:
         a.equipped_tools = []
@@ -588,18 +705,29 @@ def set_agent_tools(network_id: int, agent_id: int, payload: SetTools, db: Sessi
 
 
 @router.put("/networks/{network_id}/agents/{agent_id}/routes", response_model=AgentOut)
-def set_agent_routes(network_id: int, agent_id: int, payload: SetRoutes, db: Session = Depends(get_db_dep)):
+def set_agent_routes(
+    network_id: int,
+    agent_id: int,
+    payload: SetRoutes,
+    db: Session = Depends(get_db_dep),
+):
     a = db.get(Agent, agent_id)
     if not a or a.network_id != network_id:
         raise HTTPException(status_code=404, detail="agent not found")
 
     keys = [_lc(k) for k in payload.agent_keys]
     if keys:
-        targets = db.exec(select(Agent).where(Agent.network_id == network_id, func.lower(Agent.key).in_(keys))).all()
+        targets = db.exec(
+            select(Agent).where(
+                Agent.network_id == network_id, func.lower(Agent.key).in_(keys)
+            )
+        ).all()
         found = {ag.key.lower() for ag in targets}
         missing = sorted(set(keys) - found)
         if missing:
-            raise HTTPException(status_code=400, detail=f"unknown agents: {', '.join(missing)}")
+            raise HTTPException(
+                status_code=400, detail=f"unknown agents: {', '.join(missing)}"
+            )
         if any(ag.id == agent_id for ag in targets):
             raise HTTPException(status_code=400, detail="agent cannot route to itself")
         a.allowed_routes = targets
@@ -664,6 +792,7 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
     }
     return compiled
 
+
 class PublishResponse(BaseModel):
     id: int
     network_id: int
@@ -671,13 +800,22 @@ class PublishResponse(BaseModel):
     published_at: Optional[str] = None
 
 
-@router.post("/networks/{network_id}/versions/compile_and_publish", response_model=PublishResponse)
-def compile_and_publish(network_id: int, payload: PublishRequest, db: Session = Depends(get_db_dep)):
+@router.post(
+    "/networks/{network_id}/versions/compile_and_publish",
+    response_model=PublishResponse,
+)
+def compile_and_publish(
+    network_id: int, payload: PublishRequest, db: Session = Depends(get_db_dep)
+):
     net = db.get(Network, network_id)
     if not net:
         raise HTTPException(status_code=404, detail="network not found")
     # Determine next version num
-    current_max = db.exec(select(func.max(NetworkVersion.version)).where(NetworkVersion.network_id == network_id)).one()
+    current_max = db.exec(
+        select(func.max(NetworkVersion.version)).where(
+            NetworkVersion.network_id == network_id
+        )
+    ).one()
     next_ver = (current_max or 0) + 1
     ver = NetworkVersion(
         network_id=network_id,
@@ -697,7 +835,10 @@ def compile_and_publish(network_id: int, payload: PublishRequest, db: Session = 
     net.current_version_id = ver.id
     db.add(net)
     db.commit()
-    return PublishResponse(id=ver.id, network_id=network_id, version=ver.version, published_at=None)
+    return PublishResponse(
+        id=ver.id, network_id=network_id, version=ver.version, published_at=None
+    )
+
 
 @router.get("/networks/{network_id}/snapshot_current")
 def get_current_snapshot(network_id: int, db: Session = Depends(get_db_dep)):
@@ -706,7 +847,11 @@ def get_current_snapshot(network_id: int, db: Session = Depends(get_db_dep)):
         raise HTTPException(status_code=404, detail="network not found")
     if not net.current_version_id:
         raise HTTPException(status_code=404, detail="no current version")
-    snap = db.exec(select(CompiledSnapshot).where(CompiledSnapshot.network_version_id == net.current_version_id)).first()
+    snap = db.exec(
+        select(CompiledSnapshot).where(
+            CompiledSnapshot.network_version_id == net.current_version_id
+        )
+    ).first()
     if not snap:
         raise HTTPException(status_code=404, detail="snapshot not found")
     return snap.compiled_graph or {}

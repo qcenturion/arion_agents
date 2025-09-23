@@ -291,6 +291,8 @@ async def run_once(payload: RunOnceRequest) -> dict:
             out.setdefault("graph_version_id", graph_version_key)
         out.setdefault("network_id", network_id)
         out.setdefault("system_params", merged_system_params)
+        model_name = payload.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        out.setdefault("model", model_name)
 
         step_events = out.get("step_events")
         if isinstance(step_events, list):
@@ -495,8 +497,14 @@ def _run_record_to_snapshot(record, include_steps: bool = True) -> dict:
             )
 
     response_system_params = None
+    response_model = None
+    response_totals = None
+    response_run_duration = None
     if isinstance(record.response_payload, dict):
         response_system_params = record.response_payload.get("system_params")
+        response_model = record.response_payload.get("model")
+        response_totals = record.response_payload.get("llm_usage_totals")
+        response_run_duration = record.response_payload.get("run_duration_ms")
 
     metadata = {
         "created_at": record.created_at.isoformat() if record.created_at else None,
@@ -507,18 +515,29 @@ def _run_record_to_snapshot(record, include_steps: bool = True) -> dict:
         "user_message": record.user_message,
         "system_params": response_system_params,
     }
+    if response_model is not None:
+        metadata["model"] = response_model
+    if response_totals is not None:
+        metadata["llm_usage_totals"] = response_totals
+    if response_run_duration is not None:
+        metadata["run_duration_ms"] = response_run_duration
     final_payload = (
         response_payload.get("final") if isinstance(response_payload, dict) else None
     )
     if final_payload is not None:
         metadata["final"] = final_payload
 
-    return {
+    snapshot = {
         "traceId": record.run_id,
         "graphVersionId": record.graph_version_key,
         "steps": envelopes,
         "metadata": metadata,
     }
+    if response_totals is not None:
+        snapshot["llm_usage_totals"] = response_totals
+    if response_run_duration is not None:
+        snapshot["run_duration_ms"] = response_run_duration
+    return snapshot
 
 
 @app.post("/invoke")

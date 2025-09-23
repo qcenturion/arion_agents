@@ -4,13 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { fetchNetworkGraph, fetchNetworks, fetchSystemParamDefaults } from "@/lib/api/config";
+import { fetchLlmModels, fetchNetworkGraph, fetchNetworks, fetchSystemParamDefaults } from "@/lib/api/config";
 import { fetchRecentRuns, getRunSnapshot, triggerRun } from "@/lib/api/runs";
 import { usePlaybackStore } from "@/stores/usePlaybackStore";
 import { useRunViewStore } from "@/stores/useRunViewStore";
 import type { RunViewMode } from "@/stores/useRunViewStore";
 import type {
   ExecutionLogEntry,
+  LlmModelOption,
   NetworkGraphResponse,
   NetworkSummary,
   RunEnvelope,
@@ -45,6 +46,7 @@ export function RunConsole() {
   const [systemParams, setSystemParams] = useState<Record<string, string>>({});
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunFinal, setSelectedRunFinal] = useState<Record<string, unknown> | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
   const setInitialSteps = usePlaybackStore((state) => state.setInitialSteps);
   const resetPlayback = usePlaybackStore((state) => state.reset);
@@ -65,6 +67,17 @@ export function RunConsole() {
   const { data: systemDefaults } = useQuery({
     queryKey: ["system-param-defaults"],
     queryFn: fetchSystemParamDefaults,
+    staleTime: 5 * 60_000
+  });
+
+  const {
+    data: llmModels,
+    isLoading: llmModelsLoading,
+    isError: llmModelsError,
+    error: llmModelsErrorObj
+  } = useQuery({
+    queryKey: ["llm-models"],
+    queryFn: fetchLlmModels,
     staleTime: 5 * 60_000
   });
 
@@ -111,6 +124,11 @@ export function RunConsole() {
     }
     return map;
   }, [systemParamFields]);
+
+  const selectedModelOption = useMemo(() => {
+    if (!selectedModel) return null;
+    return (llmModels ?? []).find((model) => model.key === selectedModel) ?? null;
+  }, [llmModels, selectedModel]);
 
   const networksById = useMemo(() => {
     const map = new Map<number, NetworkSummary>();
@@ -163,6 +181,19 @@ export function RunConsole() {
   }, [systemParamFields, systemDefaults]);
 
   useEffect(() => {
+    if (!llmModels?.length) {
+      return;
+    }
+    setSelectedModel((current) => {
+      if (current && llmModels.some((model) => model.key === current)) {
+        return current;
+      }
+      const fallback = llmModels.find((model) => model.is_default) ?? llmModels[0];
+      return fallback?.key ?? current ?? null;
+    });
+  }, [llmModels]);
+
+  useEffect(() => {
     if (!activeRun) {
       return;
     }
@@ -195,7 +226,11 @@ export function RunConsole() {
   );
 
   const readyToRun = Boolean(
-    prompt.trim().length && selectedNetwork && !missingRequired && !mutation.isPending
+    prompt.trim().length &&
+      selectedNetwork &&
+      !missingRequired &&
+      !mutation.isPending &&
+      (!llmModels?.length || selectedModel)
   );
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -207,7 +242,8 @@ export function RunConsole() {
     const payload: RunRequestPayload = {
       network: selectedNetwork.name,
       user_message: prompt.trim(),
-      system_params: cleanedSystem
+      system_params: cleanedSystem,
+      model: selectedModel ?? undefined
     };
     mutation.mutate(payload);
   };
@@ -218,6 +254,8 @@ export function RunConsole() {
     setSystemParams({});
     setSelectedRunFinal(null);
     setSelectedRunId(null);
+    const defaultModelKey = llmModels?.find((option) => option.is_default)?.key ?? llmModels?.[0]?.key ?? null;
+    setSelectedModel(defaultModelKey);
   };
 
   const viewOptions: Array<{ label: string; value: RunViewMode }> = [
@@ -286,6 +324,61 @@ export function RunConsole() {
               </option>
             ))}
           </select>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <label htmlFor="llm-model" className="text-xs uppercase tracking-wide text-foreground/50">
+          Gemini model
+        </label>
+        {llmModelsLoading ? (
+          <div className="text-sm text-foreground/60">Loading models…</div>
+        ) : llmModelsError ? (
+          <div className="text-sm text-danger">
+            Failed to load models: {(llmModelsErrorObj as Error)?.message ?? "unknown error"}
+          </div>
+        ) : llmModels?.length ? (
+          <div className="space-y-2">
+            <select
+              id="llm-model"
+              name="llm-model"
+              className="w-full rounded border border-white/10 bg-background/30 px-3 py-2 text-sm text-foreground"
+              value={selectedModel ?? ""}
+              onChange={(event) => setSelectedModel(event.target.value || null)}
+            >
+              <option value="" disabled={Boolean(selectedModel)} hidden={Boolean(selectedModel)}>
+                Select model…
+              </option>
+              {llmModels.map((model) => (
+                <option key={model.key} value={model.key}>
+                  {model.label}
+                  {model.is_default ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+            {selectedModelOption ? (
+              <div className="rounded border border-white/10 bg-background/15 p-3 text-[11px] text-foreground/70">
+                <div className="font-semibold text-foreground">{selectedModelOption.label}</div>
+                {selectedModelOption.optimized_for ? (
+                  <div className="mt-1">Optimized for: {selectedModelOption.optimized_for}</div>
+                ) : null}
+                <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                  {selectedModelOption.inputs ? (
+                    <div>
+                      <span className="uppercase text-foreground/45">Inputs:</span> {selectedModelOption.inputs}
+                    </div>
+                  ) : null}
+                  {selectedModelOption.output ? (
+                    <div>
+                      <span className="uppercase text-foreground/45">Output:</span> {selectedModelOption.output}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="text-sm text-foreground/60">No Gemini models available.</div>
         )}
       </div>
 

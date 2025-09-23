@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 
@@ -16,8 +17,11 @@ export function TopNav() {
   return (
     <header className="sticky top-0 z-40 border-b border-white/5 bg-background/60 backdrop-blur">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
-        <Link href="/" className="font-semibold tracking-tight text-xl">
-          Arion Control Plane
+        <Link href="/" className="flex items-center gap-3">
+          <Image src="/assets/arion-logo.png" alt="Arion Logo" width={48} height={48} />
+          <span className="font-semibold tracking-tight text-xl">
+            Arion Control Plane
+          </span>
         </Link>
         <nav className="flex items-center gap-6 text-sm font-medium">
           {NAV_ITEMS.map((item) => {
