@@ -40,6 +40,24 @@ interface RunHistoryOption {
   createdAt?: string | null;
 }
 
+type SystemParamOverride = {
+  label?: string;
+  help?: string;
+  placeholder?: string;
+  inputType?: "text" | "textarea";
+  rows?: number;
+};
+
+const SYSTEM_PARAM_OVERRIDES: Record<string, SystemParamOverride> = {
+  session_parameters: {
+    label: "Additional session parameters",
+    help: "Optional JSON object appended to the tool session. Use valid JSON (wrap string values in quotes). Example: {\"vip_flag\": \"true\"}.",
+    placeholder: '{"vip_flag": "true"}',
+    inputType: "textarea",
+    rows: 3
+  }
+};
+
 export function RunConsole() {
   const [prompt, setPrompt] = useState("");
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkSummary | null>(null);
@@ -415,17 +433,23 @@ export function RunConsole() {
                     <p className="text-xs text-foreground/55">{group.description}</p>
                   ) : null}
                 </header>
-                {group.systemParams.length ? (
+                    {group.systemParams.length ? (
                   <div className="mt-3 space-y-3">
                     {group.systemParams.map((field) => {
                       const meta = systemFieldIndex.get(field.name);
                       const sharedTools = meta?.tools ?? [];
                       const sharedLabel = sharedTools.length > 1 ? sharedTools.join(", ") : null;
+                      const override = SYSTEM_PARAM_OVERRIDES[field.name] ?? {};
+                      const labelText = override.label ?? field.name;
+                      const placeholder = override.placeholder ?? systemDefaults?.[field.name] ?? "";
+                      const inputType = override.inputType ?? "text";
+                      const rows = override.rows ?? 3;
+                      const value = systemParams[field.name] ?? "";
                       return (
                         <div key={`${group.toolKey}-${field.name}`} className="space-y-1">
                           <label className="flex items-center justify-between text-xs uppercase tracking-wide text-foreground/50">
                             <span>
-                              {field.name}
+                              {labelText}
                               {field.required ? <span className="ml-1 text-danger">*</span> : null}
                             </span>
                             {systemDefaults?.[field.name] ? (
@@ -434,15 +458,30 @@ export function RunConsole() {
                               </span>
                             ) : null}
                           </label>
-                          <input
-                            type="text"
-                            value={systemParams[field.name] ?? ""}
-                            onChange={(event) =>
-                              setSystemParams((prev) => ({ ...prev, [field.name]: event.target.value }))
-                            }
-                            className="w-full rounded border border-white/10 bg-background/30 px-3 py-2 text-sm text-foreground focus:border-primary/60 focus:outline-none"
-                            placeholder={systemDefaults?.[field.name] ?? ""}
-                          />
+                          {inputType === "textarea" ? (
+                            <textarea
+                              value={value}
+                              onChange={(event) =>
+                                setSystemParams((prev) => ({ ...prev, [field.name]: event.target.value }))
+                              }
+                              className="w-full rounded border border-white/10 bg-background/30 px-3 py-2 text-sm text-foreground focus:border-primary/60 focus:outline-none"
+                              placeholder={placeholder}
+                              rows={rows}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={value}
+                              onChange={(event) =>
+                                setSystemParams((prev) => ({ ...prev, [field.name]: event.target.value }))
+                              }
+                              className="w-full rounded border border-white/10 bg-background/30 px-3 py-2 text-sm text-foreground focus:border-primary/60 focus:outline-none"
+                              placeholder={placeholder}
+                            />
+                          )}
+                          {override.help ? (
+                            <p className="text-[10px] text-foreground/45">{override.help}</p>
+                          ) : null}
                           {sharedLabel ? (
                             <p className="text-[10px] text-foreground/40">Applies to: {sharedLabel}</p>
                           ) : null}

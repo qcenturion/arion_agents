@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from .base import BaseTool, ToolConfig, ToolRunInput, ToolRunOutput
 from .rag.tool import HybridRAGTool
+from .dialogflow import DialogFlowCXTool
 
 
 class EchoTool(BaseTool):
@@ -209,6 +210,7 @@ PROVIDERS: Dict[str, Type[BaseTool]] = {
     "builtin:echo": EchoTool,
     "http:request": HttpRequestTool,
     "rag:hybrid": HybridRAGTool,
+    "dialogflow:cx": DialogFlowCXTool,
 }
 
 

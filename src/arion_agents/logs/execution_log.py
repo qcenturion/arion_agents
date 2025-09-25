@@ -111,6 +111,9 @@ class ExecutionLog:
         started_at_ms: Optional[int] = None,
         completed_at_ms: Optional[int] = None,
         total_duration_ms: Optional[int] = None,
+        group_id: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
+        attempt: Optional[int] = None,
     ) -> None:
         payload: Dict[str, Any] = {
             "type": "tool",
@@ -128,6 +131,12 @@ class ExecutionLog:
             payload["request_payload"] = request_payload
         if response_payload is not None:
             payload["response_payload"] = response_payload
+        if group_id is not None:
+            payload["group_id"] = group_id
+        if parent_task_id is not None:
+            payload["parent_task_id"] = parent_task_id
+        if attempt is not None:
+            payload["attempt"] = attempt
         timing: Dict[str, Any] = {}
         if started_at_ms is not None:
             timing["started_at_ms"] = started_at_ms
@@ -140,6 +149,37 @@ class ExecutionLog:
             payload["total_duration_ms"] = total_duration_ms
         if timing:
             payload["timing"] = timing
+        self.entries.append(payload)
+
+    def append_task_group_step(
+        self,
+        *,
+        step: int,
+        agent_key: str,
+        group_id: str,
+        status: str,
+        reasoning: str,
+        tasks: List[Dict[str, Any]],
+        started_at_ms: int,
+        duration_ms: int,
+        completed_at_ms: int,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "type": "task_group",
+            "step": step,
+            "epoch": self.current_epoch,
+            "agent_key": agent_key,
+            "group_id": group_id,
+            "status": status,
+            "reasoning": reasoning,
+            "tasks": tasks,
+            "duration_ms": duration_ms,
+            "timing": {
+                "started_at_ms": started_at_ms,
+                "completed_at_ms": completed_at_ms,
+                "duration_ms": duration_ms,
+            },
+        }
         self.entries.append(payload)
 
     def current_epoch_for(self, agent_key: str) -> int:
@@ -164,6 +204,9 @@ class ToolExecutionLog:
         started_at_ms: Optional[int] = None,
         completed_at_ms: Optional[int] = None,
         total_duration_ms: Optional[int] = None,
+        group_id: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
+        attempt: Optional[int] = None,
     ) -> str:
         exec_id = uuid.uuid4().hex
         timestamp_ms = (
@@ -179,6 +222,9 @@ class ToolExecutionLog:
             "started_at_ms": started_at_ms,
             "completed_at_ms": completed_at_ms,
             "total_duration_ms": total_duration_ms,
+            "group_id": group_id,
+            "parent_task_id": parent_task_id,
+            "attempt": attempt,
         }
         return exec_id
 

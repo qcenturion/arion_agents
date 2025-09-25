@@ -50,6 +50,54 @@ class RunRecord(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSONType, nullable=False, default=dict),
     )
+    experiment_id: Optional[str] = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(120), index=True, nullable=True),
+    )
+    experiment_desc: Optional[str] = Field(
+        default=None,
+        sa_column=sa.Column(sa.Text, nullable=True),
+    )
+    experiment_item_index: Optional[int] = Field(
+        default=None,
+        sa_column=sa.Column(sa.Integer, nullable=True),
+    )
+    experiment_iteration: Optional[int] = Field(
+        default=None,
+        sa_column=sa.Column(sa.Integer, nullable=True),
+    )
+    experiment_item_payload: Optional[dict] = Field(
+        default=None,
+        sa_column=Column(JSONType, nullable=True),
+    )
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={"server_default": sa.func.now()},
+    )
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={
+            "server_default": sa.func.now(),
+            "onupdate": sa.func.now(),
+        },
+    )
+
+
+class ExperimentRecord(SQLModel, table=True):
+    __tablename__ = "experiment_history"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    experiment_id: str = Field(
+        sa_column=sa.Column(sa.String(120), unique=True, nullable=False, index=True)
+    )
+    description: Optional[str] = Field(
+        default=None,
+        sa_column=sa.Column(sa.Text, nullable=True),
+    )
+    payload: dict = Field(
+        default_factory=dict,
+        sa_column=Column(JSONType, nullable=False, default=dict),
+    )
     created_at: datetime = Field(
         default_factory=datetime.utcnow,
         sa_column_kwargs={"server_default": sa.func.now()},

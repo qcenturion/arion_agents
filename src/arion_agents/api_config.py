@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 import logging
 import os
 
@@ -18,6 +18,10 @@ from .config_models import (
     CompiledSnapshot,
 )
 from .system_params import available_system_param_keys
+from .config_validation import (
+    NetworkConstraintError,
+    validate_network_constraints,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,10 +96,13 @@ class AgentOut(SQLModel):
     """API output model for an Agent, including computed fields."""
 
     id: int
+    network_id: int
     key: str
     display_name: Optional[str]
     description: Optional[str]
     allow_respond: bool
+    is_default: bool = False
+    prompt_template: Optional[str] = None
     equipped_tools: List[str] = Field(default_factory=list)
     allowed_routes: List[str] = Field(default_factory=list)
 
@@ -170,10 +177,178 @@ class ToolTestResponse(BaseModel):
     error: Optional[str] = None
 
 
+class SnapshotOut(BaseModel):
+    snapshot_id: str
+    graph_version_id: str
+    network_id: str
+    created_at: Optional[str] = None
+
+
+def _validate_network_or_raise(db: Session, network_id: int) -> None:
+    try:
+        db.flush()
+        validate_network_constraints(db, network_id)
+    except NetworkConstraintError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "network_constraint_violation",
+                "message": exc.message,
+            },
+        )
+
+
+def _combine_description_prompt(
+    description: Optional[str], prompt: Optional[str]
+) -> Optional[str]:
+    parts: List[str] = []
+    if isinstance(description, str) and description.strip():
+        parts.append(description.strip())
+    if isinstance(prompt, str) and prompt.strip():
+        parts.append(prompt.strip())
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
+def _load_compiled_agent_metadata(
+    db: Session, network_ids: List[int]
+) -> Tuple[Dict[int, Dict[str, Optional[str]]], Dict[int, Optional[str]]]:
+    """Return compiled prompt map and default agent key for the given networks."""
+
+    if not network_ids:
+        return {}, {}
+
+    prompts_map: Dict[int, Dict[str, Optional[str]]] = {}
+    default_map: Dict[int, Optional[str]] = {}
+
+    nets = db.exec(select(Network).where(Network.id.in_(list(network_ids)))).all()
+    version_ids = {
+        net.id: net.current_version_id for net in nets if net.current_version_id
+    }
+    if not version_ids:
+        for net in nets:
+            prompts_map[net.id] = {}
+            default_map[net.id] = None
+        return prompts_map, default_map
+
+    snapshot_version_ids = list(version_ids.values())
+    snapshots = db.exec(
+        select(CompiledSnapshot).where(
+            CompiledSnapshot.network_version_id.in_(snapshot_version_ids)
+        )
+    ).all()
+    snapshot_by_version = {
+        snap.network_version_id: snap for snap in snapshots
+    }
+
+    for net in nets:
+        prompts: Dict[str, Optional[str]] = {}
+        default_key: Optional[str] = None
+        ver_id = version_ids.get(net.id)
+        if ver_id:
+            snap = snapshot_by_version.get(ver_id)
+            if snap and isinstance(snap.compiled_graph, dict):
+                graph = snap.compiled_graph
+                agents_data = graph.get("agents", [])
+                if isinstance(agents_data, list):
+                    for entry in agents_data:
+                        if not isinstance(entry, dict):
+                            continue
+                        key = entry.get("key")
+                        if not isinstance(key, str):
+                            continue
+                        prompts[key] = _combine_description_prompt(
+                            entry.get("description"), entry.get("prompt")
+                        )
+                default = graph.get("default_agent_key")
+                if isinstance(default, str):
+                    default_key = default
+        prompts_map[net.id] = prompts
+        default_map[net.id] = default_key
+
+    return prompts_map, default_map
+
+
+def _resolve_agent_out(
+    agent: Agent,
+    *,
+    prompt_fallback: Optional[str] = None,
+    default_fallback: bool = False,
+) -> AgentOut:
+    prompt_template = None
+    addl = agent.additional_data or {}
+    if isinstance(addl, dict):
+        prompt_template = addl.get("prompt_template")
+    if not prompt_template and prompt_fallback:
+        prompt_template = prompt_fallback
+
+    is_default = agent.is_default or default_fallback
+
+    return AgentOut(
+        id=agent.id,
+        network_id=agent.network_id,
+        key=agent.key,
+        display_name=agent.display_name,
+        description=agent.description,
+        allow_respond=agent.allow_respond,
+        is_default=is_default,
+        prompt_template=prompt_template,
+        equipped_tools=[t.key for t in agent.equipped_tools],
+        allowed_routes=[r.key for r in agent.allowed_routes],
+    )
+
+
 @router.get("/tools", response_model=List[ToolOut])
 def list_tools(db: Session = Depends(get_db_dep)):
     tools = db.exec(select(Tool)).all()
     return [_to_tool_out(t) for t in tools]
+
+
+@router.get("/agents", response_model=List[AgentOut])
+def list_all_agents(db: Session = Depends(get_db_dep)):
+    agents = db.exec(
+        select(Agent).order_by(Agent.network_id, func.lower(Agent.key))
+    ).all()
+    network_ids = {agent.network_id for agent in agents}
+    prompts_map, default_map = _load_compiled_agent_metadata(db, list(network_ids))
+    results: List[AgentOut] = []
+    for agent in agents:
+        prompt_fallback = prompts_map.get(agent.network_id, {}).get(agent.key)
+        default_fallback = default_map.get(agent.network_id) == agent.key
+        results.append(
+            _resolve_agent_out(
+                agent,
+                prompt_fallback=prompt_fallback,
+                default_fallback=default_fallback,
+            )
+        )
+    return results
+
+
+@router.get("/snapshots", response_model=List[SnapshotOut])
+def list_snapshots(db: Session = Depends(get_db_dep)):
+    rows = db.exec(
+        select(CompiledSnapshot, NetworkVersion.network_id)
+        .join(
+            NetworkVersion,
+            NetworkVersion.id == CompiledSnapshot.network_version_id,
+        )
+        .order_by(CompiledSnapshot.created_at.desc())
+    ).all()
+    items: List[SnapshotOut] = []
+    for snapshot, network_id in rows:
+        created_at = snapshot.created_at.isoformat() if snapshot.created_at else None
+        items.append(
+            SnapshotOut(
+                snapshot_id=str(snapshot.id),
+                graph_version_id=str(snapshot.network_version_id),
+                network_id=str(network_id),
+                created_at=created_at,
+            )
+        )
+    return items
 
 
 @router.post("/tools", response_model=ToolOut, status_code=status.HTTP_201_CREATED)
@@ -562,18 +737,6 @@ def delete_network_tool(network_id: int, key: str, db: Session = Depends(get_db_
     db.commit()
 
 
-def _resolve_agent_out(agent: Agent) -> AgentOut:
-    return AgentOut(
-        id=agent.id,
-        key=agent.key,
-        display_name=agent.display_name,
-        description=agent.description,
-        allow_respond=agent.allow_respond,
-        equipped_tools=[t.key for t in agent.equipped_tools],
-        allowed_routes=[r.key for r in agent.allowed_routes],
-    )
-
-
 @router.post(
     "/networks/{network_id}/agents",
     response_model=AgentOut,
@@ -606,9 +769,15 @@ def create_agent(
         additional_data=addl,
     )
     db.add(agent)
+    _validate_network_or_raise(db, network_id)
     db.commit()
     db.refresh(agent)
-    return _resolve_agent_out(agent)
+    prompts_map, default_map = _load_compiled_agent_metadata(db, [network_id])
+    return _resolve_agent_out(
+        agent,
+        prompt_fallback=prompts_map.get(network_id, {}).get(agent.key),
+        default_fallback=default_map.get(network_id) == agent.key,
+    )
 
 
 class AgentUpdate(SQLModel):
@@ -617,6 +786,7 @@ class AgentUpdate(SQLModel):
     allow_respond: Optional[bool] = None
     is_default: Optional[bool] = None
     additional_data: Optional[dict] = None
+    prompt_template: Optional[str] = None
 
 
 @router.patch("/networks/{network_id}/agents/{agent_id}", response_model=AgentOut)
@@ -639,10 +809,23 @@ def patch_agent(
         a.is_default = bool(payload.is_default)
     if payload.additional_data is not None:
         a.additional_data = payload.additional_data
+    if payload.prompt_template is not None:
+        addl = dict(a.additional_data or {})
+        if payload.prompt_template == "":
+            addl.pop("prompt_template", None)
+        else:
+            addl["prompt_template"] = payload.prompt_template
+        a.additional_data = addl
     db.add(a)
+    _validate_network_or_raise(db, network_id)
     db.commit()
     db.refresh(a)
-    return _resolve_agent_out(a)
+    prompts_map, default_map = _load_compiled_agent_metadata(db, [network_id])
+    return _resolve_agent_out(
+        a,
+        prompt_fallback=prompts_map.get(network_id, {}).get(a.key),
+        default_fallback=default_map.get(network_id) == a.key,
+    )
 
 
 @router.get("/networks/{network_id}/agents", response_model=List[AgentOut])
@@ -650,7 +833,15 @@ def list_agents(network_id: int, db: Session = Depends(get_db_dep)):
     if not db.get(Network, network_id):
         raise HTTPException(status_code=404, detail="network not found")
     agents = db.exec(select(Agent).where(Agent.network_id == network_id)).all()
-    return [_resolve_agent_out(a) for a in agents]
+    prompts_map, default_map = _load_compiled_agent_metadata(db, [network_id])
+    return [
+        _resolve_agent_out(
+            a,
+            prompt_fallback=prompts_map.get(network_id, {}).get(a.key),
+            default_fallback=default_map.get(network_id) == a.key,
+        )
+        for a in agents
+    ]
 
 
 @router.get("/networks/{network_id}/agents/{agent_id}", response_model=AgentOut)
@@ -658,7 +849,12 @@ def get_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_dep))
     a = db.get(Agent, agent_id)
     if not a or a.network_id != network_id:
         raise HTTPException(status_code=404, detail="agent not found")
-    return _resolve_agent_out(a)
+    prompts_map, default_map = _load_compiled_agent_metadata(db, [network_id])
+    return _resolve_agent_out(
+        a,
+        prompt_fallback=prompts_map.get(network_id, {}).get(a.key),
+        default_fallback=default_map.get(network_id) == a.key,
+    )
 
 
 @router.delete(
@@ -669,6 +865,7 @@ def delete_agent(network_id: int, agent_id: int, db: Session = Depends(get_db_de
     if not a or a.network_id != network_id:
         raise HTTPException(status_code=404, detail="agent not found")
     db.delete(a)
+    _validate_network_or_raise(db, network_id)
     db.commit()
 
 
@@ -701,7 +898,12 @@ def set_agent_tools(
     db.add(a)
     db.commit()
     db.refresh(a)
-    return _resolve_agent_out(a)
+    prompts_map, default_map = _load_compiled_agent_metadata(db, [network_id])
+    return _resolve_agent_out(
+        a,
+        prompt_fallback=prompts_map.get(network_id, {}).get(a.key),
+        default_fallback=default_map.get(network_id) == a.key,
+    )
 
 
 @router.put("/networks/{network_id}/agents/{agent_id}/routes", response_model=AgentOut)
@@ -736,7 +938,12 @@ def set_agent_routes(
     db.add(a)
     db.commit()
     db.refresh(a)
-    return _resolve_agent_out(a)
+    prompts_map, default_map = _load_compiled_agent_metadata(db, [network_id])
+    return _resolve_agent_out(
+        a,
+        prompt_fallback=prompts_map.get(network_id, {}).get(a.key),
+        default_fallback=default_map.get(network_id) == a.key,
+    )
 
 
 def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
@@ -761,6 +968,7 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
             "allow_respond": bool(a.allow_respond),
             "equipped_tools": equipped,
             "allowed_routes": routes,
+            "description": a.description,
             "prompt": prompt,
         }
 

@@ -1,3 +1,9 @@
 {
-  "username": "carlemueller89"
+  "dialogflow_agent_id": "fde810bf-b9fb-4924-85be-2aab8b4896e1",
+  "dialogflow_project_id": "satacs-be-prd",
+  "dialogflow_location": "global",
+  "dialogflow_environment": "draft",
+  "dialogflow_language_code": "en",
+  "username": "CSTESTINR",
+  "customer_verified": "true"
 }

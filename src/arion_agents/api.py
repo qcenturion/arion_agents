@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -36,6 +37,19 @@ except Exception:
 def _project_root() -> Path:
     # src/arion_agents/api.py -> repo_root/arion_agents
     return Path(__file__).resolve().parents[2]
+
+
+def _combine_description_prompt(
+    description: Optional[str], prompt: Optional[str]
+) -> Optional[str]:
+    parts: list[str] = []
+    if isinstance(description, str) and description.strip():
+        parts.append(description.strip())
+    if isinstance(prompt, str) and prompt.strip():
+        parts.append(prompt.strip())
+    if not parts:
+        return None
+    return "\n\n".join(parts)
 
 
 @dataclass
@@ -214,11 +228,43 @@ class RunOnceRequest(BaseModel):
     model: str | None = None
     debug: bool = False
     snapshot: CompiledGraph | None = None
+    experiment_id: str | None = None
+    experiment_desc: str | None = None
+    experiment_item_index: int | None = None
+    experiment_iteration: int | None = None
+    experiment_item_payload: dict | None = None
 
     @model_validator(mode="after")
     def _require_target(cls, data: "RunOnceRequest"):
         if (data.network is None) == (data.snapshot is None):
             raise ValueError("Provide exactly one of 'network' or 'snapshot'")
+        return data
+
+
+class ExperimentItem(BaseModel):
+    user_message: str
+    correct_answer: str | None = None
+    iterations: int = Field(default=1, ge=1)
+    system_params: dict = Field(default_factory=dict)
+    metadata: dict | None = None
+    label: str | None = None
+
+
+class RunBatchRequest(BaseModel):
+    experiment_id: str
+    experiment_desc: str | None = None
+    network: str
+    agent_key: str | None = None
+    version: int | None = None
+    model: str | None = None
+    debug: bool = False
+    shared_system_params: dict = Field(default_factory=dict)
+    items: List[ExperimentItem]
+
+    @model_validator(mode="after")
+    def _validate_items(cls, data: "RunBatchRequest"):
+        if not data.items:
+            raise ValueError("items must contain at least one entry")
         return data
 
 
@@ -233,6 +279,7 @@ async def run_once(payload: RunOnceRequest) -> dict:
     run_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     run_id = uuid.uuid4().hex
     merged_system_params = merge_with_defaults(payload.system_params)
+    merged_system_params.setdefault("dialogflow_session_id", uuid.uuid4().hex)
 
     request_payload = payload.model_dump()
     request_payload["system_params"] = merged_system_params
@@ -324,6 +371,11 @@ async def run_once(payload: RunOnceRequest) -> dict:
                         status=status or "unknown",
                         request_payload=request_payload,
                         response_payload=out,
+                        experiment_id=payload.experiment_id,
+                        experiment_desc=payload.experiment_desc,
+                        experiment_item_index=payload.experiment_item_index,
+                        experiment_iteration=payload.experiment_iteration,
+                        experiment_item_payload=payload.experiment_item_payload,
                     )
                 )
         except Exception:
@@ -352,6 +404,91 @@ async def run_once(payload: RunOnceRequest) -> dict:
                 json.dump(run_record, f, indent=2)
         except Exception:
             pass
+
+
+@app.post("/run-batch")
+async def run_batch(payload: RunBatchRequest) -> dict:
+    """Sequentially execute multiple runs under a shared experiment identifier."""
+
+    experiment_payload = {
+        "network": payload.network,
+        "agent_key": payload.agent_key,
+        "version": payload.version,
+        "model": payload.model,
+        "items": [item.model_dump() for item in payload.items],
+    }
+
+    try:
+        from sqlalchemy import select
+        from arion_agents.db import get_session
+        from arion_agents.run_models import ExperimentRecord
+
+        with get_session() as db:
+            stmt = select(ExperimentRecord).where(
+                ExperimentRecord.experiment_id == payload.experiment_id
+            )
+            existing = db.exec(stmt).scalars().first()
+            if existing:
+                existing.description = payload.experiment_desc
+                existing.payload = experiment_payload
+            else:
+                db.add(
+                    ExperimentRecord(
+                        experiment_id=payload.experiment_id,
+                        description=payload.experiment_desc,
+                        payload=experiment_payload,
+                    )
+                )
+    except Exception:
+        # Best-effort bookkeeping; continue even if experiment log fails.
+        pass
+
+    runs: List[Dict[str, Any]] = []
+    for item_index, item in enumerate(payload.items):
+        total_iterations = max(int(item.iterations or 0), 0)
+        if total_iterations == 0:
+            continue
+        for iteration in range(1, total_iterations + 1):
+            combined_system_params = dict(payload.shared_system_params or {})
+            combined_system_params.update(item.system_params or {})
+
+            request = RunOnceRequest(
+                network=payload.network,
+                agent_key=payload.agent_key,
+                user_message=item.user_message,
+                version=payload.version,
+                system_params=combined_system_params,
+                model=payload.model,
+                debug=payload.debug,
+                experiment_id=payload.experiment_id,
+                experiment_desc=payload.experiment_desc,
+                experiment_item_index=item_index,
+                experiment_iteration=iteration,
+                experiment_item_payload={
+                    "correct_answer": item.correct_answer,
+                    "metadata": item.metadata,
+                    "label": item.label,
+                    "iterations": item.iterations,
+                    "user_message": item.user_message,
+                },
+            )
+
+            result = await run_once(request)
+            runs.append(
+                {
+                    "trace_id": result.get("trace_id"),
+                    "item_index": item_index,
+                    "iteration": iteration,
+                    "status": ((result.get("final") or {}).get("status")),
+                }
+            )
+
+    return {
+        "experiment_id": payload.experiment_id,
+        "experiment_desc": payload.experiment_desc,
+        "total_runs": len(runs),
+        "runs": runs,
+    }
 
 
 def _load_graph_from_db(network: str, version: int | None) -> GraphBundle:
@@ -428,8 +565,32 @@ def _build_run_config_from_graph(
 
     equipped = list(agent.get("equipped_tools", []))
     routes = list(agent.get("allowed_routes", []))
+    metadata = agent.get("metadata") or {}
     allow = bool(agent.get("allow_respond", False)) and allow_respond
+    raw_allow_task_group = agent.get("allow_task_group")
+    if raw_allow_task_group is None:
+        raw_allow_task_group = metadata.get("allow_task_group")
+    allow_task_group = bool(raw_allow_task_group)
+    raw_allow_task_respond = agent.get("allow_task_respond")
+    if raw_allow_task_respond is None:
+        raw_allow_task_respond = metadata.get("allow_task_respond")
+    allow_task_respond = bool(raw_allow_task_respond)
+    description = agent.get("description")
     prompt = agent.get("prompt")
+    prompt = _combine_description_prompt(description, prompt)
+
+    route_descriptions: Dict[str, str] = {}
+    if routes:
+        agents_entries = graph.get("agents", [])
+        if isinstance(agents_entries, list):
+            for entry in agents_entries:
+                if not isinstance(entry, dict):
+                    continue
+                key = entry.get("key")
+                if key in routes:
+                    desc = entry.get("description")
+                    if isinstance(desc, str) and desc.strip():
+                        route_descriptions[key] = desc.strip()
 
     tools_map = {}
     for tk in equipped:
@@ -450,7 +611,10 @@ def _build_run_config_from_graph(
         equipped_tools=equipped,
         tools_map=tools_map,
         allowed_routes=routes,
+        route_descriptions=route_descriptions,
         allow_respond=allow,
+        allow_task_group=allow_task_group,
+        allow_task_respond=allow_task_respond,
         system_params=system_params or {},
         prompt=prompt,
     )
@@ -602,9 +766,20 @@ async def stream_run(run_id: str, from_seq: int | None = None) -> StreamingRespo
 
 # Config router
 try:
-    from .api_config import router as config_router  # type: ignore
+    from .api_config import (
+        router as config_router,
+        list_snapshots as _list_snapshots,
+        SnapshotOut,
+    )  # type: ignore
 
     app.include_router(config_router, prefix="/config", tags=["config"])
+    app.add_api_route(
+        "/snapshots",
+        _list_snapshots,
+        methods=["GET"],
+        response_model=list[SnapshotOut],
+        tags=["config"],
+    )
 except Exception:
     # Keep API importable even if config store is misconfigured
     pass

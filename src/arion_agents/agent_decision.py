@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Union
+from typing import Any, Dict, Literal, Union, List, Optional
 
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, field_validator
 
 
 def _strip_additional_properties(schema: dict) -> None:
@@ -19,6 +19,9 @@ from .orchestrator import (
     UseToolAction,
     RouteToAgentAction,
     RespondAction,
+    TaskGroupAction,
+    TaskGroupTask,
+    TaskRespondAction,
     RunConfig,
 )
 
@@ -49,14 +52,44 @@ class RespondDetails(BaseModel):
     payload: Union[Dict[str, Any], str] = Field(default_factory=dict)
 
 
+class TaskGroupDetails(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=lambda s, _: _strip_additional_properties(s),
+    )
+    group_id: Optional[str] = None
+    tasks: List[TaskGroupTask] = Field(default_factory=list)
+
+    @field_validator("tasks")
+    @classmethod
+    def _validate_tasks(cls, value: List[TaskGroupTask]) -> List[TaskGroupTask]:
+        if not value:
+            raise ValueError("tasks must contain at least one entry")
+        return value
+
+
+class TaskRespondDetails(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=lambda s, _: _strip_additional_properties(s),
+    )
+    payload: Union[Dict[str, Any], str] = Field(default_factory=dict)
+
+
 class AgentDecision(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra=lambda s, _: _strip_additional_properties(s),
     )
-    action: Literal["USE_TOOL", "ROUTE_TO_AGENT", "RESPOND"]
+    action: Literal["USE_TOOL", "ROUTE_TO_AGENT", "RESPOND", "TASK_GROUP", "TASK_RESPOND"]
     action_reasoning: str
-    action_details: Union[UseToolDetails, RouteToAgentDetails, RespondDetails]
+    action_details: Union[
+        UseToolDetails,
+        RouteToAgentDetails,
+        RespondDetails,
+        TaskGroupDetails,
+        TaskRespondDetails,
+    ]
 
 
 def decision_to_instruction(decision: AgentDecision, cfg: RunConfig) -> Instruction:
@@ -79,6 +112,27 @@ def decision_to_instruction(decision: AgentDecision, cfg: RunConfig) -> Instruct
             action=RouteToAgentAction(
                 type="ROUTE_TO_AGENT", target_agent_name=details.target_agent_name, context=details.context
             ),
+        )
+    if a == "TASK_GROUP":
+        if not isinstance(details, TaskGroupDetails):
+            details = TaskGroupDetails.model_validate(details if isinstance(details, dict) else {})
+        return Instruction(
+            reasoning=decision.action_reasoning,
+            action=TaskGroupAction(
+                type="TASK_GROUP",
+                group_id=details.group_id,
+                tasks=details.tasks,
+            ),
+        )
+    if a == "TASK_RESPOND":
+        if not isinstance(details, TaskRespondDetails):
+            details = TaskRespondDetails.model_validate(details if isinstance(details, dict) else {})
+        payload = details.payload
+        if isinstance(payload, str):
+            payload = {"message": payload}
+        return Instruction(
+            reasoning=decision.action_reasoning,
+            action=TaskRespondAction(type="TASK_RESPOND", payload=payload),
         )
     # RESPOND default
     if not isinstance(details, RespondDetails):

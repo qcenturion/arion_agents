@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class UseToolAction(BaseModel):
@@ -25,7 +25,74 @@ class RespondAction(BaseModel):
     payload: Any
 
 
-Action = Union[UseToolAction, RouteToAgentAction, RespondAction]
+class TaskRetryPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempts: int = Field(default=2, ge=1)
+
+
+class DelegationDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_key: str
+    assignment: str
+    context_overrides: Dict[str, Any] = Field(default_factory=dict)
+    max_steps: int = Field(default=5, ge=1)
+    max_tokens: Optional[int] = None
+
+
+class TaskGroupTaskBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: Optional[str] = None
+    retry_policy: TaskRetryPolicy = Field(default_factory=TaskRetryPolicy)
+
+
+class TaskGroupUseTool(TaskGroupTaskBase):
+    task_type: Literal["use_tool"]
+    tool_name: str
+    tool_params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskGroupDelegate(TaskGroupTaskBase):
+    task_type: Literal["delegate_agent"]
+    delegation_details: List[DelegationDetails] = Field(default_factory=list)
+
+    @field_validator("delegation_details")
+    @classmethod
+    def _validate_details(cls, value: List[DelegationDetails]) -> List[DelegationDetails]:
+        if not value:
+            raise ValueError("delegation_details must contain at least one assignment")
+        return value
+
+
+TaskGroupTask = Union[TaskGroupUseTool, TaskGroupDelegate]
+
+
+class TaskGroupAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["TASK_GROUP"]
+    group_id: Optional[str] = None
+    tasks: List[TaskGroupTask] = Field(default_factory=list)
+
+    @field_validator("tasks")
+    @classmethod
+    def _validate_tasks(cls, value: List[TaskGroupTask]) -> List[TaskGroupTask]:
+        if not value:
+            raise ValueError("Task group must contain at least one task")
+        return value
+
+
+class TaskRespondAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["TASK_RESPOND"]
+    payload: Any
+
+
+Action = Union[
+    UseToolAction,
+    RouteToAgentAction,
+    RespondAction,
+    TaskGroupAction,
+    TaskRespondAction,
+]
 
 
 class Instruction(BaseModel):
@@ -54,7 +121,10 @@ class RunConfig(BaseModel):
     equipped_tools: List[str]
     tools_map: Dict[str, ToolRuntimeSpec] = Field(default_factory=dict)
     allowed_routes: List[str]
+    route_descriptions: Dict[str, str] = Field(default_factory=dict)
     allow_respond: bool = True
+    allow_task_group: bool = False
+    allow_task_respond: bool = False
     system_params: Dict[str, Any] = Field(default_factory=dict)
     prompt: Optional[str] = None
 
@@ -66,6 +136,15 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
             return OrchestratorResult(
                 status="retry",
                 error="RESPOND not permitted for current agent",
+            )
+        return OrchestratorResult(status="ok", response=instr.action.payload)
+
+    # TASK_RESPOND
+    if isinstance(instr.action, TaskRespondAction):
+        if cfg and not cfg.allow_task_respond:
+            return OrchestratorResult(
+                status="retry",
+                error="TASK_RESPOND not permitted for current agent",
             )
         return OrchestratorResult(status="ok", response=instr.action.payload)
 

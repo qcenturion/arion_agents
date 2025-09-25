@@ -5,6 +5,8 @@ SQLAlchemy>=2.0
 psycopg[binary]>=3.1
 httpx>=0.25
 requests>=2.31
+alembic>=1.13
+google-cloud-dialogflow-cx>=1.40
 google-generativeai>=0.7
 google-genai>=0.3
 pydantic-ai>=1.0.5
@@ -12,3 +14,4 @@ sqlmodel
 qdrant-client>=1.9
 sentence-transformers>=3.0
 torch>=2.2
+pypdf>=3.11

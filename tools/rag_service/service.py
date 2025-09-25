@@ -17,6 +17,9 @@ from sentence_transformers import SentenceTransformer
 import logging
 
 
+from arion_agents.document_processing.chunker import ChunkingConfig
+from arion_agents.document_processing.pipeline import chunk_pdf_base64
+
 logger = logging.getLogger("rag_service")
 logging.basicConfig(level=logging.INFO)
 
@@ -65,6 +68,30 @@ class SearchRequest(BaseModel):
     collection: Optional[str] = None
     top_k: int = 5
     filter: Optional[Dict[str, Any]] = None
+
+
+class ChunkingOptions(BaseModel):
+    primary_window_tokens: Optional[int] = Field(default=None, ge=1)
+    context_window_tokens: Optional[int] = Field(default=None, ge=0)
+    chunk_overlap_tokens: Optional[int] = Field(default=None, ge=0)
+    max_total_tokens: Optional[int] = Field(default=None, ge=1)
+    include_document_summary: Optional[bool] = None
+    include_section_summary: Optional[bool] = None
+    include_heading_path: Optional[bool] = None
+    include_metadata: Optional[bool] = None
+
+    def to_config(self) -> ChunkingConfig:
+        data = self.model_dump(exclude_none=True)
+        return ChunkingConfig(**data)
+
+
+class ChunkAndIndexRequest(BaseModel):
+    document_id: str
+    pdf_base64: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    collection: Optional[str] = None
+    chunk_config: Optional[ChunkingOptions] = None
+    enable_fallback_summaries: bool = True
 
 
 class MatchOut(BaseModel):
@@ -260,6 +287,92 @@ async def index_docs(payload: IndexRequest) -> Dict[str, Any]:
         logger.info("Indexed %s documents into %s", len(points), collection)
 
     return {"indexed": total, "collections": list(grouped.keys())}
+
+
+@app.post("/chunk-and-index")
+async def chunk_and_index(payload: ChunkAndIndexRequest) -> Dict[str, Any]:
+    if not payload.pdf_base64:
+        raise HTTPException(status_code=400, detail="pdf_base64 is required")
+    collection = _validate_collection(payload.collection or DEFAULT_COLLECTION)
+
+    try:
+        chunk_config = payload.chunk_config.to_config() if payload.chunk_config else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    metadata_str: Dict[str, str] = {}
+    for key, value in (payload.metadata or {}).items():
+        metadata_str[key] = "" if value is None else str(value)
+
+    try:
+        chunked = chunk_pdf_base64(
+            payload.pdf_base64,
+            document_id=payload.document_id,
+            metadata=metadata_str,
+            chunk_config=chunk_config,
+            enable_fallback_summaries=payload.enable_fallback_summaries,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("chunking failed for %s: %s", payload.document_id, exc)
+        raise HTTPException(status_code=500, detail=f"chunking failed: {exc}") from exc
+
+    if not chunked.chunks:
+        return {
+            "document_id": payload.document_id,
+            "collection": collection,
+            "chunks_indexed": 0,
+            "stats": chunked.stats,
+            "detail": "document produced no chunks",
+        }
+
+    texts = [chunk.text for chunk in chunked.chunks]
+    vectors = _encode_texts(texts)
+
+    client = get_client()
+    points: List[qmodels.PointStruct] = []
+
+    for chunk, vector in zip(chunked.chunks, vectors):
+        chunk_meta = dict(chunk.metadata)
+        if metadata_str:
+            chunk_meta.setdefault("document_metadata", metadata_str)
+        if chunked.document_summary:
+            chunk_meta.setdefault("document_summary", chunked.document_summary)
+        section_summary = chunked.section_summaries.get(chunk_meta.get("section_id"))
+        if section_summary:
+            chunk_meta.setdefault("section_summary", section_summary)
+
+        points.append(
+            qmodels.PointStruct(
+                id=chunk.id,
+                vector=vector.astype(float).tolist(),
+                payload={
+                    "text": chunk.text,
+                    "metadata": chunk_meta,
+                },
+            )
+        )
+
+    client.upsert(collection_name=collection, points=points)
+    logger.info(
+        "Chunked and indexed %s chunks for document %s into %s",
+        len(points),
+        payload.document_id,
+        collection,
+    )
+
+    response: Dict[str, Any] = {
+        "document_id": payload.document_id,
+        "collection": collection,
+        "chunks_indexed": len(points),
+        "stats": chunked.stats,
+    }
+    if chunked.document_summary:
+        response["document_summary"] = chunked.document_summary
+    if chunked.section_summaries:
+        response["section_summaries"] = chunked.section_summaries
+    return response
 
 
 @app.post("/search", response_model=SearchResponse)
