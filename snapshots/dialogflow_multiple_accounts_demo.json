@@ -1,0 +1,108 @@
+{
+  "agents": [
+    {
+      "key": "dialogflow_multi_account_tester",
+      "display_name": "DialogFlow Account Policy Tester",
+      "description": "Lead agent that orchestrates the conversation with the DialogFlow bot.",
+      "allow_respond": false,
+      "is_default": true,
+      "equipped_tools": [
+        "dialogflow_cx_tester"
+      ],
+      "allowed_routes": [
+        "dialogflow_evaluator"
+      ],
+      "metadata": {},
+      "prompt": "You are a QA analyst validating that the DialogFlow CX bot forbids customers from holding more than one account.\n\nWorkflow:\n1. On your first step in every run, issue a USE_TOOL action with dialogflow_cx_tester and set `query` to \"start conversation\" to retrieve the welcome intent. Do not mention this warm-up to the operator.\n2. After the warm-up, send natural customer questions using the same tool so you can determine whether multiple accounts are permitted. Ask directly about the policy when needed.\n3. When you have sufficient evidence, ROUTE_TO_AGENT dialogflow_evaluator so the evaluation agent can issue the final judgement.\n\nNever send the literal text \"ewc\" and never discuss internal warm-up mechanics with the operator."
+    },
+    {
+      "key": "dialogflow_evaluator",
+      "display_name": "DialogFlow Evaluation Agent",
+      "description": "Evaluation specialist that renders the final verdict.",
+      "allow_respond": true,
+      "is_default": false,
+      "equipped_tools": [],
+      "allowed_routes": [],
+      "metadata": {},
+      "prompt": "You determine whether the tester agent established the correct chatbot policy. Review the entire context, including tool outputs, before deciding.\n\nRespond with RESPOND and shape action_details.payload.response_payload to match the provided schema:\n- response_payload.answer (string) summarises the chatbot's answer.\n- response_payload.evaluation.verdict is one of pass|fail|partial|error|unknown.\n- response_payload.evaluation.notes (optional string) explains key evidence.\n\nOnly return PASS when the chatbot clearly enforces the single-account policy. Use FAIL for explicit wrong answers, PARTIAL for ambiguous evidence leaning correct, ERROR for infrastructure failures, and UNKNOWN when you cannot conclude."
+    }
+  ],
+  "tools": [
+    {
+      "key": "dialogflow_cx_tester",
+      "description": "Sends utterances to the DialogFlow CX bot under test.",
+      "provider_type": "dialogflow:cx",
+      "params_schema": {
+        "query": { "source": "agent", "required": true },
+        "username": { "source": "system", "required": false },
+        "customer_verified": { "source": "system", "required": false },
+        "session_parameters": { "source": "system", "required": false },
+        "dialogflow_project_id": { "source": "system", "required": true },
+        "dialogflow_location": { "source": "system", "required": true },
+        "dialogflow_environment": { "source": "system", "required": false },
+        "dialogflow_language_code": { "source": "system", "required": true },
+        "dialogflow_agent_id": { "source": "system", "required": true },
+        "dialogflow_session_id": { "source": "system", "required": false }
+      },
+      "secret_ref": "dialogflow_service_account.json",
+      "metadata": {
+        "agent_params_json_schema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "description": "User-style utterance to send to the bot."
+            }
+          },
+          "required": ["query"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "respond": {
+    "payload_guidance": "Evaluation agent must emit response_payload.answer (string) and response_payload.evaluation.verdict (pass|fail|partial|error|unknown).",
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "response_payload": {
+          "type": "object",
+          "properties": {
+            "answer": { "type": "string" },
+            "evaluation": {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "enum": ["pass", "fail", "partial", "error", "unknown"]
+                },
+                "notes": { "type": "string" }
+              },
+              "required": ["verdict"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["answer", "evaluation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["response_payload"],
+      "additionalProperties": false
+    },
+    "payload_example": {
+      "response_payload": {
+        "answer": "The chatbot states customers may only keep a single account.",
+        "evaluation": {
+          "verdict": "pass",
+          "notes": "Bot refused to open a second account and referenced policy."
+        }
+      }
+    }
+  },
+  "default_agent_key": "dialogflow_multi_account_tester",
+  "adjacency": [
+    { "from": "dialogflow_multi_account_tester", "to": "dialogflow_evaluator" }
+  ],
+  "policy": {}
+}

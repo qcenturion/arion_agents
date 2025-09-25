@@ -26,7 +26,10 @@ export interface NonLogSummary {
 }
 
 export function summarizeAgentPayload(payload: Record<string, unknown> | undefined): AgentStepSummary {
-  const agentKey = typeof payload?.agent_key === "string" ? payload.agent_key : "agent";
+  const rawAgentKey = typeof payload?.agent_key === "string" ? payload.agent_key : undefined;
+  const agentKey = rawAgentKey?.trim();
+  const agentDisplayNameRaw = typeof payload?.agent_display_name === "string" ? payload.agent_display_name : undefined;
+  const agentDisplayName = agentDisplayNameRaw?.trim();
   const decisionFull = (payload?.decision_full ?? payload?.decision) as Record<string, unknown> | undefined;
   const action = typeof decisionFull?.action === "string" ? decisionFull.action : undefined;
   const upperAction = action?.toUpperCase() ?? "UNKNOWN";
@@ -53,8 +56,11 @@ export function summarizeAgentPayload(payload: Record<string, unknown> | undefin
   const status: TimelineStatus = !parsedOk || hasError ? "failure" : "success";
   const duration = typeof payload?.duration_ms === "number" ? payload.duration_ms : undefined;
 
+  const agentName = agentDisplayName || agentKey;
+  const actorLabel = agentName ? `Agent: ${agentName}` : undefined;
+
   return {
-    actorLabel: `Agent · ${agentKey}`,
+    actorLabel,
     actionLabel,
     detailLabel,
     reasonLabel: reasoning,
@@ -65,7 +71,6 @@ export function summarizeAgentPayload(payload: Record<string, unknown> | undefin
 
 export function summarizeToolPayload(payload: Record<string, unknown> | undefined): ToolStepSummary {
   const toolKey = typeof payload?.tool_key === "string" ? payload.tool_key : "tool";
-  const agentKey = typeof payload?.agent_key === "string" ? payload.agent_key : undefined;
   const statusRaw = typeof payload?.status === "string" ? payload.status.toLowerCase() : "";
   const successStatuses = new Set(["ok", "success", "completed"]);
   let status: TimelineStatus = "unknown";
@@ -74,12 +79,13 @@ export function summarizeToolPayload(payload: Record<string, unknown> | undefine
   }
   const duration = typeof payload?.duration_ms === "number" ? payload.duration_ms : undefined;
   const statusLabel = statusRaw ? `Status: ${payload?.status}` : undefined;
+  const actorLabel = `Tool: ${toolKey}`;
 
   return {
     detailLabel: `Tool Name: ${toolKey}`,
     status,
     statusLabel,
-    actorLabel: agentKey ? `Agent · ${agentKey}` : undefined,
+    actorLabel,
     duration,
     toolLabel: toolKey
   };

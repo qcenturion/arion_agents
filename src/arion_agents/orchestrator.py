@@ -127,6 +127,10 @@ class RunConfig(BaseModel):
     allow_task_respond: bool = False
     system_params: Dict[str, Any] = Field(default_factory=dict)
     prompt: Optional[str] = None
+    respond_payload_schema: Optional[Dict[str, Any]] = None
+    respond_payload_guidance: Optional[str] = None
+    respond_payload_example: Optional[Dict[str, Any]] = None
+    display_name: Optional[str] = None
 
 
 def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> OrchestratorResult:

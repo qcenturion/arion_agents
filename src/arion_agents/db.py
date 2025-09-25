@@ -30,7 +30,6 @@ else:  # sqlite / others
 if backend_name.startswith("sqlite"):
     try:
         from sqlalchemy import event  # type: ignore
-        from sqlalchemy.engine import Engine  # type: ignore
 
         @event.listens_for(engine, "connect")
         def _set_sqlite_pragma(dbapi_con, con_record):  # pragma: no cover

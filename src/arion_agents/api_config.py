@@ -536,6 +536,7 @@ def get_network_graph(network_id: int, db: Session = Depends(get_db_dep)):
             "name": net.name,
             "status": net.status,
             "description": net.description,
+            "additional_data": net.additional_data or {},
         },
         "agents": agent_nodes,
         "tools": tools,
@@ -548,6 +549,7 @@ class NetworkUpdate(SQLModel):
     name: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None  # draft|published|archived
+    additional_data: Optional[dict] = None
 
 
 @router.patch("/networks/{network_id}", response_model=Network)
@@ -574,6 +576,8 @@ def patch_network(
         if s not in {"draft", "published", "archived"}:
             raise HTTPException(status_code=400, detail="invalid status")
         net.status = s
+    if payload.additional_data is not None:
+        net.additional_data = payload.additional_data or {}
     db.add(net)
     db.commit()
     db.refresh(net)
@@ -992,12 +996,29 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
             default_agent_key = a.key
             break
 
+    respond_config = {}
+    net_meta = net.additional_data if isinstance(net.additional_data, dict) else {}
+    if isinstance(net_meta, dict):
+        payload_schema = net_meta.get("respond_payload_schema")
+        payload_guidance = net_meta.get("respond_payload_guidance")
+        payload_example = net_meta.get("respond_payload_example")
+        if payload_schema or payload_guidance or payload_example:
+            respond_config = {}
+            if payload_schema:
+                respond_config["payload_schema"] = payload_schema
+            if payload_guidance:
+                respond_config["payload_guidance"] = payload_guidance
+            if payload_example:
+                respond_config["payload_example"] = payload_example
+
     compiled = {
         "version_id": version_id,
         "default_agent_key": default_agent_key,
         "agents": [agent_entry(a) for a in agents],
         "tools": tools_entries,
     }
+    if respond_config:
+        compiled["respond"] = respond_config
     return compiled
 
 

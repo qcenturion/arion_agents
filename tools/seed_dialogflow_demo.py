@@ -15,6 +15,7 @@ API_ROOT = os.getenv("API_URL", "http://localhost:8000")
 NETWORK_NAME = os.getenv("DIALOGFLOW_DEMO_NETWORK", "dialogflow_multiple_accounts_demo")
 TOOL_KEY = os.getenv("DIALOGFLOW_DEMO_TOOL", "dialogflow_cx_tester")
 AGENT_KEY = os.getenv("DIALOGFLOW_DEMO_AGENT", "dialogflow_multi_account_tester")
+EVAL_AGENT_KEY = os.getenv("DIALOGFLOW_EVAL_AGENT", "dialogflow_evaluator")
 SECRET_REF = os.getenv("DIALOGFLOW_DEMO_SECRET_REF", "dialogflow_service_account.json")
 DEFAULT_AGENT_ID = os.getenv(
     "DIALOGFLOW_AGENT_ID", "fde810bf-b9fb-4924-85be-2aab8b4896e1"
@@ -39,6 +40,31 @@ Workflow:
 
 Never send the literal text "ewc" and never discuss internal warm-up mechanics
 with the operator.
+""".strip()
+
+
+EVAL_PROMPT = """
+You are the evaluation specialist who determines whether the agent under test
+correctly established the customer's eligibility for multiple accounts.
+
+You receive the entire conversation history via the context section. Review the
+tool outputs and the tester agent's reasoning to understand the evidence.
+
+Produce a RESPOND action with action_details.payload.response_payload matching
+the provided schema:
+- response_payload.answer (string): short natural language summary of the
+  chatbot's policy response.
+- response_payload.evaluation.verdict (pass|fail|partial|error|unknown): your
+  judgement about whether the tester achieved the correct outcome relative to
+  the expected policy.
+- response_payload.evaluation.notes (string, optional): supporting explanation
+  describing important signals (e.g., conflicting answers, stalled dialogues,
+  missing evidence).
+
+Only return PASS when the chatbot clearly confirms the correct policy. Mark
+FAIL when the bot gives an explicit wrong answer. Use PARTIAL when the evidence
+is ambiguous but leans toward compliance, ERROR when the run failed for
+infrastructure reasons, and UNKNOWN when you cannot reach a conclusion.
 """.strip()
 
 
@@ -137,6 +163,51 @@ def recreate_network() -> int:
     payload = {
         "name": NETWORK_NAME,
         "description": "DialogFlow CX policy regression harness",
+        "additional_data": {
+            "respond_payload_guidance": "The evaluation agent must emit response_payload.answer (string) and response_payload.evaluation.verdict (pass|fail|partial|error|unknown).",
+            "respond_payload_schema": {
+                "type": "object",
+                "properties": {
+                    "response_payload": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": "string"},
+                            "evaluation": {
+                                "type": "object",
+                                "properties": {
+                                    "verdict": {
+                                        "type": "string",
+                                        "enum": [
+                                            "pass",
+                                            "fail",
+                                            "partial",
+                                            "error",
+                                            "unknown"
+                                        ]
+                                    },
+                                    "notes": {"type": "string"}
+                                },
+                                "required": ["verdict"],
+                                "additionalProperties": False
+                            }
+                        },
+                        "required": ["answer", "evaluation"],
+                        "additionalProperties": False
+                    }
+                },
+                "required": ["response_payload"],
+                "additionalProperties": False
+            },
+            "respond_payload_example": {
+                "response_payload": {
+                    "answer": "The bot explicitly states customers may only maintain a single account.",
+                    "evaluation": {
+                        "verdict": "pass",
+                        "notes": "Bot refused the multi-account request and cited the policy."
+                    }
+                }
+            }
+        },
     }
     created = _ensure_ok(requests.post(_url("/config/networks"), json=payload), 201)
     return created["id"]
@@ -160,19 +231,33 @@ def add_tool_to_network(network_id: int) -> int:
     raise RuntimeError("network tool not found after creation")
 
 
-def create_agent(network_id: int) -> int:
-    payload = {
+def create_agents(network_id: int) -> tuple[int, int]:
+    # Create evaluation agent first so the network immediately satisfies the RESPOND constraint.
+    eval_payload = {
+        "key": EVAL_AGENT_KEY,
+        "display_name": "DialogFlow Evaluation Agent",
+        "allow_respond": True,
+        "is_default": False,
+        "prompt_template": EVAL_PROMPT,
+    }
+    evaluator = _ensure_ok(
+        requests.post(_url(f"/config/networks/{network_id}/agents"), json=eval_payload),
+        201,
+    )
+
+    primary_payload = {
         "key": AGENT_KEY,
         "display_name": "DialogFlow Account Policy Tester",
-        "allow_respond": True,
+        "allow_respond": False,
         "is_default": True,
         "prompt_template": AGENT_PROMPT,
     }
-    created = _ensure_ok(
-        requests.post(_url(f"/config/networks/{network_id}/agents"), json=payload),
+    primary = _ensure_ok(
+        requests.post(_url(f"/config/networks/{network_id}/agents"), json=primary_payload),
         201,
     )
-    return created["id"]
+
+    return primary["id"], evaluator["id"]
 
 
 def equip_agent(network_id: int, agent_id: int) -> None:
@@ -180,6 +265,15 @@ def equip_agent(network_id: int, agent_id: int) -> None:
         requests.put(
             _url(f"/config/networks/{network_id}/agents/{agent_id}/tools"),
             json={"tool_keys": [TOOL_KEY]},
+        )
+    )
+
+
+def set_agent_routes(network_id: int, agent_id: int, routes: list[str]) -> None:
+    _ensure_ok(
+        requests.put(
+            _url(f"/config/networks/{network_id}/agents/{agent_id}/routes"),
+            json={"agent_keys": routes},
         )
     )
 
@@ -243,12 +337,16 @@ def main() -> None:
     network_tool_id = add_tool_to_network(network_id)
     print(f"Network tool id={network_tool_id}")
 
-    print("Creating default agent...")
-    agent_id = create_agent(network_id)
-    print(f"Agent id={agent_id}")
+    print("Creating agents...")
+    primary_agent_id, evaluator_agent_id = create_agents(network_id)
+    print(f"Primary agent id={primary_agent_id}, evaluator id={evaluator_agent_id}")
 
-    print("Equipping agent with DialogFlow tool...")
-    equip_agent(network_id, agent_id)
+    print("Equipping primary agent with DialogFlow tool...")
+    equip_agent(network_id, primary_agent_id)
+
+    print("Configuring agent routing graph...")
+    set_agent_routes(network_id, primary_agent_id, [EVAL_AGENT_KEY])
+    set_agent_routes(network_id, evaluator_agent_id, [])
 
     print("Publishing network version...")
     publish_network(network_id)
@@ -264,7 +362,7 @@ def main() -> None:
         print("Smoke test did not complete. See logs above.")
         return
 
-    final = (result.get("final") or {}).get("payload")
+    final = result.get("final")
     if final:
         print("Final payload:")
         print(final)

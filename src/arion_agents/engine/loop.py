@@ -21,7 +21,6 @@ from arion_agents.orchestrator import (
     TaskGroupAction,
     TaskGroupDelegate,
     TaskGroupUseTool,
-    TaskRespondAction,
     UseToolAction,
     OrchestratorResult,
     execute_instruction,
@@ -56,6 +55,7 @@ def run_loop(
     step_summaries: list[Dict[str, Any]] = []
     step_events: list[Dict[str, Any]] = []
     next_seq = 0
+    pending_route_context: Dict[str, Dict[str, Any]] = {}
 
     def _latency_payload() -> Dict[str, Any]:
         run_duration_ms = int((time.perf_counter() - run_perf_start) * 1000)
@@ -98,6 +98,7 @@ def run_loop(
     def _log_tool_execution(
         *,
         agent_key: str,
+        agent_display_name: Optional[str] = None,
         step_idx: int,
         tool_action,
         result,
@@ -146,6 +147,7 @@ def run_loop(
             response_preview=str(full_result),
             status=result.status,
             duration_ms=duration_ms,
+            agent_display_name=agent_display_name,
             request_payload=params_for_log or {},
             response_payload=full_result,
             started_at_ms=tool_started_at_ms,
@@ -308,6 +310,7 @@ def run_loop(
                     )
                     log_info = _log_tool_execution(
                         agent_key=agent_key,
+                        agent_display_name=cfg.display_name,
                         step_idx=step_idx + 1,
                         tool_action=child_instr.action,
                         result=child_result,
@@ -429,6 +432,8 @@ def run_loop(
         cfg = get_cfg(current_agent)
         exec_log.start_agent_epoch(current_agent)
 
+        handoff_context = pending_route_context.pop(current_agent, None)
+
         # Gather full tool outputs for this agent's current epoch
         epoch = exec_log.current_epoch_for(current_agent)
         full_tool_outputs = [
@@ -442,15 +447,18 @@ def run_loop(
         step_started_at_ms = int(time.time() * 1000)
         step_perf_start = time.perf_counter()
 
-        constraints = build_constraints(cfg)
         tool_defs = build_tool_definitions(cfg)
         route_defs = build_route_definitions(cfg)
+        constraints = build_constraints(cfg, tool_defs, route_defs)
         # Always include the original user message for every agent/step so
         # routed agents see the full request context instead of a placeholder.
-        context = build_context(user_message, exec_log.to_list(), full_tool_outputs)
-        prompt = build_prompt(
-            cfg, cfg.prompt, context, constraints, tool_defs, route_defs
+        context = build_context(
+            user_message,
+            exec_log.to_list(),
+            full_tool_outputs,
+            handoff_context,
         )
+        prompt = build_prompt(cfg, cfg.prompt, context, constraints)
 
         # Log prompt when debugging
         if debug:
@@ -546,6 +554,7 @@ def run_loop(
             # Mirror the context behavior: always show the original message
             user_input_preview=user_message,
             decision_preview=decision_dump,
+            agent_display_name=cfg.display_name,
             prompt=prompt,
             raw_response=text,
             decision_full=decision_dump,
@@ -630,6 +639,7 @@ def run_loop(
         elif instr.action.type == "USE_TOOL":
             log_info = _log_tool_execution(
                 agent_key=current_agent,
+                agent_display_name=cfg.display_name,
                 step_idx=step + 1,
                 tool_action=instr.action,
                 result=res,
@@ -650,6 +660,11 @@ def run_loop(
             target_agent = instr.action.target_agent_name
             current_agent = target_agent
             step_summary["routed_to_agent"] = target_agent
+            route_context = dict(getattr(instr.action, "context", {}) or {})
+            pending_route_context[target_agent] = route_context
+            if route_context:
+                step_summary["route_context_keys"] = sorted(route_context.keys())
+                agent_entry["route_context"] = route_context
         elif instr.action.type == "TASK_GROUP":
             if task_group_outcome is not None:
                 group_id = task_group_outcome.get("group_id")

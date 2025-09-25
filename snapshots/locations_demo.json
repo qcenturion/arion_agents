@@ -160,6 +160,61 @@
       }
     }
   ],
+  "respond": {
+    "payload_guidance": "Wrap the final answer inside response_payload with fields answer (string) and evaluation (object).",
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "response_payload": {
+          "type": "object",
+          "properties": {
+            "answer": {
+              "type": "string"
+            },
+            "evaluation": {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "partial",
+                    "error",
+                    "unknown"
+                  ]
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "verdict"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "answer"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "response_payload"
+      ],
+      "additionalProperties": false
+    },
+    "payload_example": {
+      "response_payload": {
+        "answer": "Sunset in Paris is at 7:32 PM local time.",
+        "evaluation": {
+          "verdict": "pass",
+          "notes": "Matched the provided correct answer."
+        }
+      }
+    }
+  },
   "default_agent_key": "triage",
   "adjacency": [
     {

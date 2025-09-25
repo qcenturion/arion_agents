@@ -16,9 +16,10 @@ interface RunPlaybackProps {
   traceId: string;
   initialSteps: RunEnvelope[];
   graphVersionId?: string | null;
+  networkName?: string | null;
 }
 
-export function RunPlayback({ traceId, initialSteps }: RunPlaybackProps) {
+export function RunPlayback({ traceId, initialSteps, graphVersionId, networkName }: RunPlaybackProps) {
   const setInitialSteps = usePlaybackStore((state) => state.setInitialSteps);
   const appendStep = usePlaybackStore((state) => state.appendStep);
   const reset = usePlaybackStore((state) => state.reset);
@@ -47,6 +48,22 @@ export function RunPlayback({ traceId, initialSteps }: RunPlaybackProps) {
 
   const latency = useMemo(() => summariseRunLatency(steps), [steps]);
 
+  const resolvedNetworkName = useMemo(() => {
+    if (typeof networkName === "string" && networkName.trim().length) {
+      return networkName.trim();
+    }
+    if (typeof graphVersionId === "string" && graphVersionId.includes(":")) {
+      const [networkPart] = graphVersionId.split(":");
+      if (networkPart?.trim()) {
+        return networkPart.trim();
+      }
+    }
+    if (graphVersionId?.trim()) {
+      return graphVersionId.trim();
+    }
+    return undefined;
+  }, [graphVersionId, networkName]);
+
   const content = view === "timeline" ? (
     <div className="flex w-[360px] flex-col border-r border-white/5 bg-surface/70">
       <PlaybackToolbar traceId={traceId} />
@@ -62,7 +79,7 @@ export function RunPlayback({ traceId, initialSteps }: RunPlaybackProps) {
   ) : (
     <div className="flex min-w-0 flex-1 flex-col border-r border-white/5 bg-surface/70">
       <PlaybackToolbar traceId={traceId} />
-      <RunFlowGraph steps={steps} />
+      <RunFlowGraph steps={steps} networkName={resolvedNetworkName} />
     </div>
   );
 

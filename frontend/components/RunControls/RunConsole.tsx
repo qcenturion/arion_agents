@@ -8,11 +8,11 @@ import { fetchLlmModels, fetchNetworkGraph, fetchNetworks, fetchSystemParamDefau
 import { fetchRecentRuns, getRunSnapshot, triggerRun } from "@/lib/api/runs";
 import { usePlaybackStore } from "@/stores/usePlaybackStore";
 import { useRunViewStore } from "@/stores/useRunViewStore";
+import { useRunMetadataStore } from "@/stores/useRunMetadataStore";
 import type { RunViewMode } from "@/stores/useRunViewStore";
 import type {
   ExecutionLogEntry,
   LlmModelOption,
-  NetworkGraphResponse,
   NetworkSummary,
   RunEnvelope,
   RunMetadata,
@@ -20,43 +20,19 @@ import type {
   RunResponsePayload,
   RunSnapshot
 } from "@/lib/api/types";
-
-interface SystemParamField {
-  name: string;
-  tools: string[];
-  required: boolean;
-}
-
-interface ToolParamGroup {
-  toolKey: string;
-  displayName?: string | null;
-  description?: string | null;
-  systemParams: Array<{ name: string; required: boolean }>;
-}
+import {
+  SYSTEM_PARAM_OVERRIDES,
+  deriveSystemParamMetadata,
+  shallowEqualRecord,
+  type SystemParamField,
+  type ToolParamGroup
+} from "@/lib/systemParams";
 
 interface RunHistoryOption {
   traceId: string;
   label: string;
   createdAt?: string | null;
 }
-
-type SystemParamOverride = {
-  label?: string;
-  help?: string;
-  placeholder?: string;
-  inputType?: "text" | "textarea";
-  rows?: number;
-};
-
-const SYSTEM_PARAM_OVERRIDES: Record<string, SystemParamOverride> = {
-  session_parameters: {
-    label: "Additional session parameters",
-    help: "Optional JSON object appended to the tool session. Use valid JSON (wrap string values in quotes). Example: {\"vip_flag\": \"true\"}.",
-    placeholder: '{"vip_flag": "true"}',
-    inputType: "textarea",
-    rows: 3
-  }
-};
 
 export function RunConsole() {
   const [prompt, setPrompt] = useState("");
@@ -70,6 +46,8 @@ export function RunConsole() {
   const resetPlayback = usePlaybackStore((state) => state.reset);
   const view = useRunViewStore((state) => state.view);
   const setView = useRunViewStore((state) => state.setView);
+  const setNetworkName = useRunMetadataStore((state) => state.setNetworkName);
+  const clearNetworkName = useRunMetadataStore((state) => state.clear);
 
   const {
     data: networks,
@@ -213,13 +191,17 @@ export function RunConsole() {
 
   useEffect(() => {
     if (!activeRun) {
+      clearNetworkName();
       return;
     }
     const steps = deriveStepsFromSnapshot(activeRun);
     setInitialSteps(steps);
     const finalPayload = (activeRun.metadata?.final ?? null) as Record<string, unknown> | null;
     setSelectedRunFinal(finalPayload);
-  }, [activeRun, setInitialSteps]);
+
+    const networkLabel = computeNetworkLabel(activeRun.metadata);
+    setNetworkName(networkLabel ?? undefined);
+  }, [activeRun, clearNetworkName, setInitialSteps, setNetworkName]);
 
   const mutation = useMutation({
     mutationFn: (payload: RunRequestPayload) => triggerRun(payload),
@@ -624,127 +606,27 @@ function normalizeExecutionLog(entries: ExecutionLogEntry[], traceId: string): R
   }));
 }
 
-function deriveSystemParamMetadata(graph: NetworkGraphResponse | undefined): {
-  fields: SystemParamField[];
-  groups: ToolParamGroup[];
-} {
-  if (!graph) {
-    return { fields: [], groups: [] };
+function computeNetworkLabel(metadata: RunMetadata | undefined): string | null {
+  const name = metadata?.network_name;
+  if (typeof name === "string" && name.trim().length) {
+    return name.trim();
   }
-
-  const agents = Array.isArray(graph.agents) ? graph.agents : [];
-  const tools = Array.isArray(graph.tools) ? graph.tools : [];
-
-  if (!agents.length && !tools.length) {
-    return { fields: [], groups: [] };
+  if (metadata?.network_id != null) {
+    return String(metadata.network_id);
   }
-
-  const defaultAgent = agents.find((agent) => agent.is_default) ?? agents[0];
-  const equippedKeysRaw = Array.isArray(defaultAgent?.equipped_tools)
-    ? defaultAgent?.equipped_tools ?? []
-    : tools.map((tool) => tool.key);
-
-  const equippedKeys = Array.from(
-    new Set(
-      (equippedKeysRaw ?? [])
-        .map((key) => String(key ?? "").trim())
-        .filter((key) => key.length)
-    )
-  );
-
-  const toolIndex = new Map<string, NetworkGraphResponse["tools"][number]>();
-  for (const tool of tools) {
-    if (tool?.key) {
-      toolIndex.set(String(tool.key).toLowerCase(), tool);
+  const key = metadata?.graph_version_key;
+  if (typeof key === "string" && key.includes(":")) {
+    const [networkPart] = key.split(":");
+    if (networkPart?.trim()) {
+      return networkPart.trim();
     }
   }
-
-  const accumulator = new Map<string, SystemParamField>();
-  const groups: ToolParamGroup[] = [];
-
-  for (const rawKey of equippedKeys) {
-    const key = rawKey.toLowerCase();
-    const tool = toolIndex.get(key);
-    if (!tool) continue;
-
-    const paramsSchema = (tool.params_schema ?? {}) as Record<string, unknown>;
-    const systemParams: Array<{ name: string; required: boolean }> = [];
-
-    Object.entries(paramsSchema).forEach(([paramName, schema]) => {
-      const spec = (schema as { source?: unknown; required?: unknown }) ?? {};
-      const source = typeof spec.source === "string" ? spec.source : undefined;
-      if ((source ?? "agent") !== "system") {
-        return;
-      }
-      const required = Boolean(spec.required);
-      systemParams.push({ name: paramName, required });
-      const field = accumulator.get(paramName) ?? {
-        name: paramName,
-        tools: [],
-        required: false
-      };
-      field.required = field.required || required;
-      if (!field.tools.includes(tool.key)) {
-        field.tools.push(tool.key);
-      }
-      accumulator.set(paramName, field);
-    });
-
-    groups.push({
-      toolKey: tool.key,
-      displayName: tool.display_name,
-      description: tool.description,
-      systemParams
-    });
+  if (typeof key === "string" && key.trim().length) {
+    return key.trim();
   }
-
-  // Include remaining tools that were not in equipped_keys so operators still see coverage.
-  for (const tool of tools) {
-    if (!tool?.key) continue;
-    if (equippedKeys.some((key) => key.toLowerCase() === tool.key.toLowerCase())) {
-      continue;
-    }
-    const paramsSchema = (tool.params_schema ?? {}) as Record<string, unknown>;
-    const systemParams: Array<{ name: string; required: boolean }> = [];
-    Object.entries(paramsSchema).forEach(([paramName, schema]) => {
-      const spec = (schema as { source?: unknown; required?: unknown }) ?? {};
-      const source = typeof spec.source === "string" ? spec.source : undefined;
-      if ((source ?? "agent") !== "system") {
-        return;
-      }
-      const required = Boolean(spec.required);
-      systemParams.push({ name: paramName, required });
-      const field = accumulator.get(paramName) ?? {
-        name: paramName,
-        tools: [],
-        required: false
-      };
-      field.required = field.required || required;
-      if (!field.tools.includes(tool.key)) {
-        field.tools.push(tool.key);
-      }
-      accumulator.set(paramName, field);
-    });
-    groups.push({
-      toolKey: tool.key,
-      displayName: tool.display_name,
-      description: tool.description,
-      systemParams
-    });
-  }
-
-  const fields = Array.from(accumulator.values()).sort((a, b) => a.name.localeCompare(b.name));
-  return { fields, groups };
+  return null;
 }
 
-function shallowEqualRecord(a: Record<string, string>, b: Record<string, string>): boolean {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) {
-    return false;
-  }
-  return aKeys.every((key) => a[key] === b[key]);
-}
 
 function generateLocalTraceId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {

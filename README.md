@@ -52,6 +52,17 @@ SQLite is still available via `make run-api-sqlite`, but the production target i
    tail -n 120 /tmp/arion_uvicorn.log
    ```
 
+## Batch Experiments
+
+The Experiments workspace lets operators queue multi-run validations against a published network.
+
+- Select a network to see its agents and tools (editable via the same cards available on the Config tab). This view confirms the default agent and equipped tools the runtime will use.
+- Shared system parameters are inferred from the default agent’s tools. Structured fields line up with the Runs console so the same Dialogflow session inputs or other tool-specific knobs can be reused. Additional JSON can be layered on if needed.
+- You can queue runs without a dataset: fill in the manual experiment item (user message, iteration count, optional metadata/labels/correct answer, per-item system params) and launch. The runtime converts the entry into a single `ExperimentItem` for the queue.
+- Uploading a CSV/JSONL is optional but supported. The validator echoes row-level errors and warnings before launch, and the downstream queue worker reuses the same `/run` pathway.
+- Each queued run still executes through the snapshot’s default agent unless an explicit `agent_key` is supplied via the API. Shared + item-level system params are merged and applied before the orchestrator builds the agent prompt.
+- Progress is visible in real time: the left rail tracks queued/completed counts, and the detail pane lists individual queue items with trace links back to the Runs viewer.
+
 ## Snapshot-First Runtime
 
 - `/config/...` endpoints create and update networks, tools, and agents. `POST /config/networks/{id}/versions/compile_and_publish` materializes a snapshot into `cfg_compiled_snapshots`.

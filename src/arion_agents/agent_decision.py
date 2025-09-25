@@ -2,17 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Union, List, Optional
 
-from pydantic import BaseModel, Field, ValidationError, ConfigDict, field_validator
-
-
-def _strip_additional_properties(schema: dict) -> None:
-    # Recursively remove any 'additionalProperties' keys from the JSON Schema
-    if isinstance(schema, dict):
-        schema.pop("additionalProperties", None)
-        for v in list(schema.values()):
-            _strip_additional_properties(v) if isinstance(v, dict) else (
-                [_strip_additional_properties(i) for i in v] if isinstance(v, list) else None
-            )
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from .orchestrator import (
     Instruction,
@@ -24,6 +14,17 @@ from .orchestrator import (
     TaskRespondAction,
     RunConfig,
 )
+
+
+def _strip_additional_properties(schema: dict) -> None:
+    # Recursively remove any 'additionalProperties' keys from the JSON Schema
+    if isinstance(schema, dict):
+        schema.pop("additionalProperties", None)
+        for v in list(schema.values()):
+            _strip_additional_properties(v) if isinstance(v, dict) else (
+                [_strip_additional_properties(i) for i in v] if isinstance(v, list) else None
+            )
+
 
 
 class UseToolDetails(BaseModel):

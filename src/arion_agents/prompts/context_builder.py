@@ -4,34 +4,56 @@ from typing import Any, Dict, List
 import json
 
 
-def build_constraints(cfg) -> str:
-    lines: List[str] = []
-    # Action envelope statement tailored to what the agent can actually do
-    actions: List[str] = []
+def build_constraints(
+    cfg, tool_defs: str | None = None, route_defs: str | None = None
+) -> str:
+    # Determine action flags up front
     has_tools = bool(getattr(cfg, "equipped_tools", []) or [])
     has_routes = bool(getattr(cfg, "allowed_routes", []) or [])
     can_respond = bool(getattr(cfg, "allow_respond", True))
     can_task_group = bool(getattr(cfg, "allow_task_group", False))
     can_task_respond = bool(getattr(cfg, "allow_task_respond", False))
-    if has_tools:
-        actions.append("USE_TOOL")
-    if has_routes:
-        actions.append("ROUTE_TO_AGENT")
-    if can_respond:
-        actions.append("RESPOND")
-    if can_task_group:
-        actions.append("TASK_GROUP")
-    if can_task_respond:
-        actions.append("TASK_RESPOND")
-    if actions:
-        lines.append(
-            f"You MUST respond as JSON with fields: action ({'|'.join(actions)}), action_reasoning (string; 1-3 sentences explaining why you chose this action/agent), action_details (object)."
-        )
 
-    # Only describe tools if any are equipped
-    tool_names: List[str] = []
+    allowed_actions: List[str] = []
     if has_tools:
-        lines.append("Allowed tools and agent-provided params:")
+        allowed_actions.append("USE_TOOL")
+    if has_routes:
+        allowed_actions.append("ROUTE_TO_AGENT")
+    if can_respond:
+        allowed_actions.append("RESPOND")
+    if can_task_group:
+        allowed_actions.append("TASK_GROUP")
+    if can_task_respond:
+        allowed_actions.append("TASK_RESPOND")
+
+    lines: List[str] = []
+    if allowed_actions:
+        lines.append(
+            "You MUST reply with EXACTLY ONE of the following allowed actions and match the corresponding JSON schema."
+        )
+        lines.append(f"Allowed actions: {', '.join(allowed_actions)}")
+
+    # Action sections in consistent order
+    if has_tools:
+        lines.append(
+            "\n=== USE_TOOL action ===\nYou MUST follow this schema:"
+        )
+        lines.append("```json")
+        lines.append(
+            json.dumps(
+                {
+                    "action": "USE_TOOL",
+                    "action_reasoning": "<why you chose this tool>",
+                    "action_details": {
+                        "tool_name": "<exact tool name>",
+                        "tool_params": {"<param>": "<value>"},
+                    },
+                }
+            )
+        )
+        lines.append("```")
+        lines.append("tool_params MUST conform to the tool schemas listed below.")
+        tool_names: List[str] = []
         for k in cfg.equipped_tools:
             ts = cfg.tools_map.get(k)
             if not ts:
@@ -41,94 +63,122 @@ def build_constraints(cfg) -> str:
                 or (isinstance(ts, dict) and ts.get("params_schema"))
                 or {}
             )
-            ps = [
-                name
-                for name, spec in (params_schema or {}).items()
-                if (spec or {}).get("source", "agent") == "agent"
-            ]
-            lines.append(f"- {k}: params={ps}")
             tool_names.append(k)
-        if tool_names:
-            lines.append(f"tool_name must be one of: {tool_names}")
-
-    # Only describe routes if any exist
-    if has_routes:
-        lines.append("Allowed routes (exact agent names):")
-        for r in cfg.allowed_routes:
-            lines.append(f"- {r}")
-
-    # Tailor guidance per action availability
-    if has_tools:
-        lines.append(
-            "When using USE_TOOL, action_details must include tool_name and tool_params."
-        )
-    if has_routes:
-        lines.append(
-            "When routing, action_details must include target_agent_name (use the exact agent name from the list)."
-        )
-    if can_respond:
-        lines.append("When responding, put your payload in action_details.payload.")
-        # Provide a minimal RESPOND example so agents know the exact envelope
         try:
-            lines.append("Example for RESPOND (follow exactly):")
-            respond_example = {
-                "action": "RESPOND",
-                "action_reasoning": "why final",
-                "action_details": {"payload": {"message": "<final text>"}},
-            }
-            lines.append("```json")
-            import json as _json
-
-            lines.append(_json.dumps(respond_example))
-            lines.append("```")
-        except Exception:
-            pass
-    if can_task_group:
-        lines.append(
-            "When using TASK_GROUP, action_details.tasks must be a list of task objects with unique task_id values when possible."
-        )
-        lines.append(
-            "Each task requires task_type (use_tool|delegate_agent) and retry_policy.attempts (defaults to 2)."
-        )
-        lines.append(
-            "use_tool tasks mirror USE_TOOL schema; delegate_agent tasks require delegation_details with agent_key and assignment text."
-        )
-    if can_task_respond:
-        lines.append(
-            "Use TASK_RESPOND to finish delegated work; place the delegated result in action_details.payload."
-        )
-
-    # Only show a USE_TOOL example when tools are present
-    try:
-        if has_tools and tool_names:
-            first = tool_names[0]
-            ts = cfg.tools_map.get(first)
-            params_schema = (
-                getattr(ts, "params_schema", None)
-                or (isinstance(ts, dict) and ts.get("params_schema"))
-                or {}
-            )
+            first = tool_names[0] if tool_names else "<tool>"
+            tool_entry = cfg.tools_map.get(first)
+            if isinstance(tool_entry, dict):
+                params_schema = tool_entry.get("params_schema") or {}
+            else:
+                params_schema = getattr(tool_entry, "params_schema", {}) or {}
             agent_fields = [
                 name
                 for name, spec in (params_schema or {}).items()
                 if (spec or {}).get("source", "agent") == "agent"
             ]
-            example_params = {k: f"<{k}>" for k in agent_fields} or {"example": "value"}
-            lines.append("Example for USE_TOOL (follow exactly):")
-            example = {
-                "action": "USE_TOOL",
-                "action_reasoning": "why this tool",
-                "action_details": {"tool_name": first, "tool_params": example_params},
-            }
+            example_params = {name: f"<{name}>" for name in agent_fields}
+            if not example_params:
+                example_params = {"param": "<value>"}
+            lines.append("Example:")
             lines.append("```json")
-            lines.append(json.dumps(example))
+            lines.append(
+                json.dumps(
+                    {
+                        "action": "USE_TOOL",
+                        "action_reasoning": "why this tool",
+                        "action_details": {
+                            "tool_name": first,
+                            "tool_params": example_params,
+                        },
+                    }
+                )
+            )
             lines.append("```")
-    except Exception:
-        pass
+        except Exception:
+            pass
+
+        if tool_defs:
+            lines.append(tool_defs)
+
+    if has_routes:
+        lines.append(
+            "\n=== ROUTE_TO_AGENT action ===\nYou MUST follow this schema:"
+        )
+        lines.append("```json")
+        sample_route = cfg.allowed_routes[0] if cfg.allowed_routes else "<agent>"
+        lines.append(
+            json.dumps(
+                {
+                    "action": "ROUTE_TO_AGENT",
+                    "action_reasoning": "<why you are handing off>",
+                    "action_details": {
+                        "target_agent_name": sample_route,
+                        "context": {"handoff_summary": "<details to pass>"},
+                    },
+                }
+            )
+        )
+        lines.append("```")
+        if route_defs:
+            lines.append(route_defs)
+        lines.append(
+            "Use action_details.context to pass any structured handoff data the next agent needs (conversation transcripts, findings, constraints). The orchestrator injects this object into their prompt context verbatim."
+        )
+        if not can_respond:
+            lines.append(
+                "You are not allowed to RESPOND directly; hand off with ROUTE_TO_AGENT when you have sufficient evidence."
+            )
+        lines.append("Always return JSON matching one of the allowed envelopes; never emit free-form text.")
+
+    if can_respond:
+        lines.append(
+            "\n=== RESPOND action ===\nYou MUST follow this schema:"
+        )
+        lines.append("```json")
+        lines.append(
+            json.dumps(
+                {
+                    "action": "RESPOND",
+                    "action_reasoning": "<why final>",
+                    "action_details": {"payload": {"message": "<final text>"}},
+                }
+            )
+        )
+        lines.append("```")
+        additional_guidance = getattr(cfg, "respond_payload_guidance", None)
+        if additional_guidance:
+            lines.append(f"RESPOND guidance: {additional_guidance}")
+        payload_schema = getattr(cfg, "respond_payload_schema", None)
+        if payload_schema:
+            try:
+                lines.append("RESPOND payload schema (follow exactly):")
+                lines.append("```json")
+                lines.append(json.dumps(payload_schema))
+                lines.append("```")
+            except Exception:
+                lines.append("RESPOND payload schema provided but could not be serialized for display.")
+        payload_example = getattr(cfg, "respond_payload_example", None)
+        if payload_example:
+            try:
+                lines.append("Example RESPOND payload structure:")
+                lines.append("```json")
+                lines.append(json.dumps(payload_example))
+                lines.append("```")
+            except Exception:
+                lines.append("RESPOND payload example provided but could not be serialized for display.")
+
     if can_task_group:
+        lines.append(
+            "\n=== TASK_GROUP action ===\nWhen using TASK_GROUP, action_details.tasks must be a list of task objects with unique task_id values when possible."
+        )
+        lines.append(
+            "Each task requires task_type (use_tool|delegate_agent) and retry_policy.attempts (defaults to 2)."
+        )
+        lines.append(
+            "use_tool tasks mirror the USE_TOOL schema; delegate_agent tasks require delegation_details with agent_key and assignment text."
+        )
         try:
-            lines.append("Example for TASK_GROUP (two tasks):")
-            example_tool = tool_names[0] if tool_names else "tool_key"
+            example_tool = cfg.equipped_tools[0] if cfg.equipped_tools else "tool_key"
             task_group_example = {
                 "action": "TASK_GROUP",
                 "action_reasoning": "plan parallel tasks",
@@ -158,14 +208,29 @@ def build_constraints(cfg) -> str:
                     ],
                 },
             }
+            lines.append("Example:")
             lines.append("```json")
             lines.append(json.dumps(task_group_example))
             lines.append("```")
-            lines.append(
-                "Each child task must include retry_policy (defaults to 2 attempts); delegated tasks must list delegation_details with assignment text."
-            )
         except Exception:
             pass
+    if can_task_respond:
+        lines.append(
+            "\n=== TASK_RESPOND action ===\nUse TASK_RESPOND to finish delegated work; place the delegated result in action_details.payload."
+        )
+        lines.append("Example:")
+        lines.append("```json")
+        lines.append(
+            json.dumps(
+                {
+                    "action": "TASK_RESPOND",
+                    "action_reasoning": "deliver delegated result",
+                    "action_details": {"payload": {"summary": "<delegated output>"}},
+                }
+            )
+        )
+        lines.append("```")
+
     return "\n".join(lines)
 
 
@@ -252,12 +317,17 @@ def build_route_definitions(cfg) -> str:
             desc = route_descriptions.get(r)
             if desc:
                 lines.append(f"- {r}: {desc}")
-    lines.append("Example for ROUTE_TO_AGENT (follow exactly; use exact agent name):")
+    lines.append(
+        "Example for ROUTE_TO_AGENT (follow exactly; use exact agent name and populate context as needed):"
+    )
     sample_route = routes[0]
     route_example = {
         "action": "ROUTE_TO_AGENT",
         "action_reasoning": f"Routing to {sample_route} because it best fits the user request.",
-        "action_details": {"target_agent_name": sample_route},
+        "action_details": {
+            "target_agent_name": sample_route,
+            "context": {"handoff_summary": "<details to pass>"},
+        },
     }
     lines.append("```json")
     lines.append(json.dumps(route_example))
@@ -269,9 +339,16 @@ def build_context(
     user_message: str,
     exec_log: List[Dict[str, Any]],
     full_tool_outputs: List[Dict[str, Any]],
+    handoff_context: Dict[str, Any] | None = None,
 ) -> str:
     parts: List[str] = []
     parts.append(f"User message:\n{user_message}")
+    if handoff_context:
+        parts.append("Context handed off from previous agent:")
+        try:
+            parts.append(json.dumps(handoff_context))
+        except Exception:
+            parts.append(str(handoff_context))
     if full_tool_outputs:
         parts.append("Tool outputs (most recent first):")
         for item in reversed(full_tool_outputs):
@@ -322,16 +399,10 @@ def build_prompt(
     base_prompt: str | None,
     context: str,
     constraints: str,
-    tool_defs: str | None = None,
-    route_defs: str | None = None,
 ) -> str:
     parts: List[str] = []
     if base_prompt:
         parts.append(base_prompt)
-    if tool_defs:
-        parts.append(tool_defs)
-    if route_defs:
-        parts.append(route_defs)
     # Optionally include action schemas (strict) to guide the model (may duplicate info)
     # Keeping this for future unification; tools/routes sections already provide schemas.
     # parts.append(build_action_schemas(cfg))

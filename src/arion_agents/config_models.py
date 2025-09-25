@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional, List
 
 import sqlalchemy as sa
-from sqlmodel import Field, Relationship, SQLModel, JSON, Column, text
+from sqlmodel import Field, Relationship, SQLModel, Column, text
 
 from .db import JSONType
 
@@ -30,6 +30,10 @@ class Network(SQLModel, table=True):
     description: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
     status: str = Field(default="draft", max_length=32)
     current_version_id: Optional[int] = Field(default=None)
+    additional_data: dict = Field(
+        default_factory=dict,
+        sa_column=Column("additional_data", JSONType, nullable=True, default=dict),
+    )
 
     agents: List["Agent"] = Relationship(back_populates="network", sa_relationship_kwargs={"passive_deletes": True})
     versions: List["NetworkVersion"] = Relationship(back_populates="network", sa_relationship_kwargs={"passive_deletes": True})

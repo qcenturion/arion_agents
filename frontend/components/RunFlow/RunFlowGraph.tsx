@@ -43,6 +43,7 @@ interface RunFlowGraphProps {
   steps: RunEnvelope[];
   onExpand?: () => void;
   orientation?: "vertical" | "horizontal";
+  networkName?: string | null;
 }
 
 interface NodePosition {
@@ -64,14 +65,14 @@ interface GraphBounds {
   maxY: number;
 }
 
-const NODE_WIDTH = 160;
+const NODE_WIDTH = 240;
 const NODE_HEIGHT = 70;
 const MINI_NODE_SIZE = 14;
 const MINI_GAP = 18;
 const CARD_PADDING_WIDTH = NODE_WIDTH;
 const CARD_PADDING_HEIGHT = NODE_HEIGHT;
 
-export function RunFlowGraph({ steps, onExpand, orientation = "vertical" }: RunFlowGraphProps) {
+export function RunFlowGraph({ steps, onExpand, orientation = "vertical", networkName }: RunFlowGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
@@ -178,14 +179,17 @@ export function RunFlowGraph({ steps, onExpand, orientation = "vertical" }: RunF
       const totalWidth = Math.max(orderedNodes.length - 1, 1) * horizontalGap;
       const minX = -totalWidth / 2;
       const maxX = totalWidth / 2;
-      const centerY = 0;
+      const verticalCascade = NODE_WIDTH * 1.2;
+      const totalHeight = Math.max(orderedNodes.length - 1, 0) * verticalCascade;
+      const cascadeMinY = -totalHeight / 2;
 
       orderedNodes.forEach((meta, index) => {
         const positionX = minX + index * horizontalGap;
+        const positionY = cascadeMinY + index * verticalCascade;
         graph.addNode(meta.id, {
           ...meta,
           x: positionX,
-          y: centerY,
+          y: positionY,
           highlighted: false
         });
       });
@@ -203,7 +207,8 @@ export function RunFlowGraph({ steps, onExpand, orientation = "vertical" }: RunF
         });
       });
 
-    const bounds: GraphBounds = { minX, maxX, minY: centerY - NODE_HEIGHT, maxY: centerY + NODE_HEIGHT };
+    const cascadeMaxY = totalHeight / 2;
+    const bounds: GraphBounds = { minX, maxX, minY: cascadeMinY - NODE_HEIGHT, maxY: cascadeMaxY + NODE_HEIGHT };
 
     if (sigmaRef.current) {
       sigmaRef.current.kill();
@@ -404,8 +409,15 @@ export function RunFlowGraph({ steps, onExpand, orientation = "vertical" }: RunF
     <div ref={containerRef} className="relative flex min-h-[320px] flex-1">
       <div ref={canvasRef} className="absolute inset-0" />
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute left-4 top-4 rounded bg-background/80 px-3 py-1 text-xs uppercase tracking-wide text-foreground/60">
-          Execution Flow Graph · {overlayNodes.length} steps
+        <div className="absolute left-4 top-4 flex flex-col gap-2">
+          <div className="rounded bg-background/80 px-3 py-1 text-xs uppercase tracking-wide text-foreground/60">
+            Execution Flow Graph · {overlayNodes.length} steps
+          </div>
+          {networkName ? (
+            <div className="rounded bg-background/80 px-3 py-1 text-xs text-foreground/60">
+              Network · {networkName}
+            </div>
+          ) : null}
         </div>
         {onExpand ? (
           <div className="absolute right-4 top-4 pointer-events-auto">
@@ -787,7 +799,7 @@ function NodeCard({
             <span className="text-foreground/50">{node.status.toUpperCase()}</span>
           </div>
           <div className="mt-0.5 flex flex-col text-foreground/70">
-            <span>{node.title}</span>
+            {node.title?.trim().toUpperCase() === "TOOL" ? null : <span>{node.title}</span>}
             {node.subtitle ? <span className="text-[10px] text-foreground/50">{node.subtitle}</span> : null}
           </div>
         </div>

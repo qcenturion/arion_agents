@@ -18,6 +18,12 @@ export default async function RunPage({ params }: RunPageProps) {
   }
 
   const graphVersionId = run.graphVersionId ?? run.metadata?.graph_version_key ?? null;
+  const networkName =
+    run.metadata?.network_name && run.metadata.network_name.trim().length
+      ? run.metadata.network_name.trim()
+      : run.metadata?.network_id != null
+        ? String(run.metadata.network_id)
+        : null;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-row overflow-hidden">
@@ -26,13 +32,18 @@ export default async function RunPage({ params }: RunPageProps) {
         <div className="flex min-h-0 flex-1 flex-row divide-x divide-white/5">
           <div className="flex min-w-0 flex-1 flex-col">
             <Suspense fallback={<div className="p-6 text-sm text-foreground/60">Loading playback…</div>}>
-              <RunPlayback traceId={params.traceId} initialSteps={run.steps} graphVersionId={graphVersionId ?? undefined} />
+              <RunPlayback
+                traceId={params.traceId}
+                initialSteps={run.steps}
+                graphVersionId={graphVersionId ?? undefined}
+                networkName={networkName ?? undefined}
+              />
             </Suspense>
           </div>
           {graphVersionId ? (
             <div className="hidden w-[420px] flex-col lg:flex">
               <Suspense fallback={<div className="p-6 text-sm text-foreground/60">Loading graph…</div>}>
-                <GraphViewer graphVersionId={graphVersionId} focusTraceId={params.traceId} />
+                <GraphViewer graphVersionId={graphVersionId} focusTraceId={params.traceId} networkName={networkName ?? undefined} />
               </Suspense>
             </div>
           ) : null}

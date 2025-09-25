@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { TraceTimelinePanel } from "@/components/TraceTimeline/TraceTimelinePanel";
 import { useRunViewStore } from "@/stores/useRunViewStore";
 import { usePlaybackStore } from "@/stores/usePlaybackStore";
+import { useRunMetadataStore } from "@/stores/useRunMetadataStore";
 
 const RunFlowGraph = dynamic(() => import("@/components/RunFlow/RunFlowGraph"), {
   ssr: false,
@@ -18,6 +19,7 @@ const RunFlowGraph = dynamic(() => import("@/components/RunFlow/RunFlowGraph"), 
 export function RunWorkspace() {
   const view = useRunViewStore((state) => state.view);
   const steps = usePlaybackStore((state) => state.steps);
+  const networkName = useRunMetadataStore((state) => state.networkName);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -35,7 +37,7 @@ export function RunWorkspace() {
   if (view === "graph") {
     return (
       <>
-        <RunFlowGraph steps={steps} onExpand={openExpanded} orientation="vertical" />
+        <RunFlowGraph steps={steps} onExpand={openExpanded} orientation="vertical" networkName={networkName} />
         {expanded ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 backdrop-blur">
             <div className="flex h-[90vh] w-[90vw] max-w-5xl flex-col overflow-hidden rounded-xl border border-white/10 bg-surface/95 shadow-floating">
@@ -50,7 +52,7 @@ export function RunWorkspace() {
                 </button>
               </header>
               <div className="flex min-h-0 flex-1">
-                <RunFlowGraph steps={steps} orientation="horizontal" />
+                <RunFlowGraph steps={steps} orientation="horizontal" networkName={networkName} />
               </div>
             </div>
           </div>

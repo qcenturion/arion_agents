@@ -32,6 +32,7 @@ class ExecutionLog:
         user_input_preview: str,
         decision_preview: Dict[str, Any],
         *,
+        agent_display_name: Optional[str] = None,
         prompt: Optional[str] = None,
         raw_response: Optional[str] = None,
         decision_full: Optional[Dict[str, Any]] = None,
@@ -62,6 +63,8 @@ class ExecutionLog:
                 ),
             },
         }
+        if agent_display_name is not None:
+            payload["agent_display_name"] = agent_display_name
         if prompt is not None:
             payload["prompt"] = prompt
         if raw_response is not None:
@@ -106,6 +109,7 @@ class ExecutionLog:
         status: str,
         duration_ms: int,
         *,
+        agent_display_name: Optional[str] = None,
         request_payload: Optional[Dict[str, Any]] = None,
         response_payload: Optional[Any] = None,
         started_at_ms: Optional[int] = None,
@@ -127,6 +131,8 @@ class ExecutionLog:
             "status": status,
             "duration_ms": duration_ms,
         }
+        if agent_display_name is not None:
+            payload["agent_display_name"] = agent_display_name
         if request_payload is not None:
             payload["request_payload"] = request_payload
         if response_payload is not None:

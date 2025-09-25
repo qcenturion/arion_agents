@@ -1,15 +1,21 @@
-import os
+import asyncio
+import csv
+import io
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, HTTPException
+from functools import lru_cache
+import sqlalchemy as sa
+from sqlmodel import Session
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 import logging
 from logging.handlers import RotatingFileHandler
 from arion_agents.prompts.context_builder import (
@@ -22,6 +28,16 @@ from arion_agents.prompts.context_builder import (
 
 from arion_agents.runtime_models import CompiledGraph
 from arion_agents.system_params import merge_with_defaults
+from arion_agents.db import get_session
+from arion_agents.run_models import (
+    ExperimentQueueRecord,
+    ExperimentQueueStatus,
+    ExperimentRecord,
+    RunRecord,
+    enqueue_queue_items,
+    lease_next_queue_item,
+    mark_queue_item_completed,
+)
 
 # Basic logging config; level via LOG_LEVEL (default INFO)
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -101,6 +117,17 @@ app.add_middleware(
 )
 
 
+_queue_worker_lock = asyncio.Lock()
+_queue_worker_task: asyncio.Task[Any] | None = None
+_FORCE_DEBUG_LOGGING = os.getenv("DEBUG", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "debug",
+}
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     _setup_file_logging()
@@ -110,6 +137,8 @@ async def _startup() -> None:
         init_db()
     except Exception:
         logging.getLogger(__name__).exception("Failed to initialize database tables")
+
+    await _ensure_queue_worker()
 
 
 @app.get("/health")
@@ -233,6 +262,7 @@ class RunOnceRequest(BaseModel):
     experiment_item_index: int | None = None
     experiment_iteration: int | None = None
     experiment_item_payload: dict | None = None
+    max_steps: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _require_target(cls, data: "RunOnceRequest"):
@@ -260,6 +290,7 @@ class RunBatchRequest(BaseModel):
     debug: bool = False
     shared_system_params: dict = Field(default_factory=dict)
     items: List[ExperimentItem]
+    max_steps: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _validate_items(cls, data: "RunBatchRequest"):
@@ -323,13 +354,16 @@ async def run_once(payload: RunOnceRequest) -> dict:
                 graph, agent_key, True, merged_system_params
             )
 
-        out = run_loop(
+        max_steps = payload.max_steps or 10
+        debug_enabled = payload.debug or _FORCE_DEBUG_LOGGING
+        out = await asyncio.to_thread(
+            run_loop,
             _get_cfg,
             default_agent,
             payload.user_message,
-            max_steps=10,
+            max_steps=max_steps,
             model=payload.model,
-            debug=payload.debug,
+            debug=debug_enabled,
         )
         if out is None:
             out = {}
@@ -352,9 +386,6 @@ async def run_once(payload: RunOnceRequest) -> dict:
                     env["t"] = int(time.time() * 1000)
 
         try:
-            from arion_agents.run_models import RunRecord
-            from arion_agents.db import get_session
-
             status = (
                 (out.get("final") or {}).get("status")
                 if isinstance(out.get("final"), dict)
@@ -406,44 +437,458 @@ async def run_once(payload: RunOnceRequest) -> dict:
             pass
 
 
+_STALE_QUEUE_TIMEOUT = timedelta(minutes=5)
+
+
+async def _ensure_queue_worker() -> None:
+    global _queue_worker_task
+    async with _queue_worker_lock:
+        if _queue_worker_task and not _queue_worker_task.done():
+            return
+        _reset_stale_queue_items()
+        loop = asyncio.get_running_loop()
+        _queue_worker_task = loop.create_task(_drain_experiment_queue())
+
+
+def _reset_stale_queue_items() -> None:
+    logger = logging.getLogger(__name__)
+    now = datetime.utcnow()
+    cutoff = now - _STALE_QUEUE_TIMEOUT
+
+    with get_session() as db:
+        stmt = sa.select(ExperimentQueueRecord).where(
+            ExperimentQueueRecord.status == ExperimentQueueStatus.IN_PROGRESS.value
+        )
+
+        if _STALE_QUEUE_TIMEOUT.total_seconds() > 0:
+            stmt = stmt.where(
+                sa.or_(
+                    ExperimentQueueRecord.started_at.is_(None),
+                    ExperimentQueueRecord.started_at < cutoff,
+                )
+            )
+
+        stale_items = db.exec(stmt).scalars().all()
+        if not stale_items:
+            return
+
+        for item in stale_items:
+            logger.warning(
+                "Resetting stale experiment queue item %s (started_at=%s)",
+                item.id,
+                item.started_at,
+            )
+            item.status = ExperimentQueueStatus.PENDING
+            item.started_at = None
+            item.completed_at = None
+            item.error = None
+            item.result = None
+            db.add(item)
+
+
+async def _drain_experiment_queue() -> None:
+    logger = logging.getLogger(__name__)
+    try:
+        while True:
+            record_id: int | None = None
+            leased = False
+            with get_session() as db:
+                record = lease_next_queue_item(db)
+                if record is not None:
+                    leased = True
+                    record_id = record.id
+                    if record_id is None:
+                        logger.warning("Lease returned queue item without id")
+                        record_id = None
+            if not leased:
+                break
+            if record_id is None:
+                continue
+            await _process_queue_record(record_id)
+            await asyncio.sleep(0)
+    except Exception:
+        logger.exception("Experiment queue worker crashed")
+    finally:
+        _queue_worker_task = None
+
+
+async def _process_queue_record(record_id: int) -> None:
+    logger = logging.getLogger(__name__)
+    with get_session() as db:
+        record = db.get(ExperimentQueueRecord, record_id)
+        if record is None:
+            logger.warning("Queue item %s missing before processing", record_id)
+            return
+        payload = dict(record.payload or {})
+        if _FORCE_DEBUG_LOGGING and not payload.get("debug"):
+            payload["debug"] = True
+        result_summary: dict[str, Any] = {
+            "item_index": record.item_index,
+            "iteration": record.iteration,
+        }
+
+    success = False
+    error_text: str | None = None
+
+    try:
+        request = RunOnceRequest(**payload)
+        result = await run_once(request)
+        final_section = result.get("final") if isinstance(result, dict) else None
+        final_status = (
+            final_section.get("status") if isinstance(final_section, dict) else None
+        )
+        trace_id = result.get("trace_id") if isinstance(result, dict) else None
+        result_summary.update({"trace_id": trace_id, "status": final_status})
+        success = final_status in {None, "ok"}
+        if not success:
+            error_text = f"final status {final_status!r}"
+    except HTTPException as exc:
+        success = False
+        error_text = f"HTTP {exc.status_code}: {exc.detail}"
+        result_summary.setdefault("status", "error")
+        result_summary["trace_id"] = None
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Experiment queue item %s failed", record_id)
+        success = False
+        error_text = str(exc)
+        result_summary.setdefault("status", "error")
+        result_summary["trace_id"] = None
+    finally:
+        try:
+            if error_text:
+                result_summary["error"] = error_text
+            with get_session() as db:
+                mark_queue_item_completed(
+                    db,
+                    record_id,
+                    succeeded=success,
+                    error=error_text,
+                    result=result_summary,
+                )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to update queue item %s", record_id)
+
+
+_CSV_REQUIRED_COLUMNS = ["iterations"]
+_CSV_OPTIONAL_COLUMNS = [
+    "user_message",
+    "issue_description",
+    "true_solution_description",
+    "stopping_conditions",
+    "correct_answer",
+    "label",
+]
+_SYSTEM_PARAMS_PREFIX = "system_params"
+
+
+def _decode_upload_bytes(data: bytes) -> str:
+    if not data:
+        return ""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="ignore")
+
+
+def _load_rows_from_csv(text: str) -> list[dict[str, Any]]:
+    buffer = io.StringIO(text)
+    try:
+        reader = csv.DictReader(buffer)
+    except csv.Error as exc:  # pragma: no cover - csv module raises on malformed header
+        raise ValueError(f"Invalid CSV: {exc}") from exc
+
+    rows: list[dict[str, Any]] = []
+    for raw_row in reader:
+        if not raw_row:
+            continue
+        cleaned: dict[str, Any] = {}
+        for key, value in raw_row.items():
+            if key is None:
+                continue
+            clean_key = key.strip()
+            if not clean_key:
+                continue
+            if isinstance(value, str):
+                value = value.strip()
+            cleaned[clean_key] = value
+        if any(v not in (None, "") for v in cleaned.values()):
+            rows.append(cleaned)
+    return rows
+
+
+def _load_rows_from_jsonl(text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON on line {lineno}: {exc.msg}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Line {lineno} must be a JSON object")
+        shaped = {}
+        for key, value in parsed.items():
+            clean_key = str(key).strip()
+            if clean_key:
+                shaped[clean_key] = value
+        if any(v not in (None, "") for v in shaped.values()):
+            rows.append(shaped)
+    return rows
+
+
+def _coerce_jsonish(value: Any) -> Any:
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed == "":
+            return ""
+        lowered = trimmed.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        if lowered == "null":
+            return None
+        if trimmed[0] in "[{" and trimmed[-1] in "]}":
+            try:
+                return json.loads(trimmed)
+            except json.JSONDecodeError:
+                return trimmed
+        return trimmed
+    return value
+
+
+def _coerce_iterations(value: Any) -> tuple[int, str | None]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 1, "iterations is missing or invalid; defaulting to 1"
+    if parsed < 1:
+        return 1, "iterations must be >= 1; defaulting to 1"
+    return parsed, None
+
+
+def _assign_nested(target: dict[str, Any], path: list[str], value: Any) -> None:
+    if not path:
+        return
+    current = target
+    for key in path[:-1]:
+        existing = current.get(key)
+        if not isinstance(existing, dict):
+            existing = {}
+            current[key] = existing
+        current = existing
+    current[path[-1]] = value
+
+
+def _parse_system_param_path(raw_key: str) -> list[str]:
+    if not raw_key.lower().startswith(_SYSTEM_PARAMS_PREFIX):
+        return []
+    suffix = raw_key[len(_SYSTEM_PARAMS_PREFIX) :]
+    suffix = suffix.lstrip("._")
+    if not suffix:
+        return []
+    normalized = suffix.replace("__", ".")
+    parts = [part for part in normalized.split(".") if part]
+    return parts
+
+
+def _row_to_experiment_item(
+    row: dict[str, Any]
+) -> tuple[ExperimentItem | None, list[str], str | None]:
+    metadata: dict[str, Any] = {}
+    system_params: dict[str, Any] = {}
+    warnings: list[str] = []
+    iterations = 1
+    user_message: str | None = None
+    correct_answer: str | None = None
+    label: str | None = None
+
+    for raw_key, raw_value in row.items():
+        if raw_key is None:
+            continue
+        key = raw_key.strip()
+        if not key:
+            continue
+        lowered = key.lower()
+        value = _coerce_jsonish(raw_value)
+
+        if lowered == "iterations":
+            iterations, warn = _coerce_iterations(value)
+            if warn:
+                warnings.append(warn)
+        elif lowered == "user_message":
+            user_message = str(value) if value is not None else None
+        elif lowered == "correct_answer":
+            correct_answer = (
+                str(value) if value not in (None, "") else None
+            )
+        elif lowered == "label":
+            label = str(value) if value not in (None, "") else None
+        elif lowered in {
+            "issue_description",
+            "true_solution_description",
+            "stopping_conditions",
+        }:
+            if value not in (None, ""):
+                metadata[lowered] = value
+        elif lowered.startswith(_SYSTEM_PARAMS_PREFIX):
+            path = _parse_system_param_path(key)
+            if not path:
+                if isinstance(value, dict):
+                    system_params.update(value)
+                elif value not in (None, ""):
+                    warnings.append(
+                        "system_params column expects an object; value ignored"
+                    )
+            else:
+                _assign_nested(system_params, path, value)
+        else:
+            if value not in (None, ""):
+                metadata[key] = value
+
+    if user_message is None or not str(user_message).strip():
+        user_message = "start conversation"
+        warnings.append(
+            "user_message missing; defaulted to 'start conversation'"
+        )
+
+    try:
+        item = ExperimentItem(
+            user_message=str(user_message),
+            correct_answer=correct_answer,
+            iterations=iterations,
+            system_params=system_params,
+            metadata=metadata or None,
+            label=label,
+        )
+        return item, warnings, None
+    except ValidationError as exc:
+        return None, warnings, exc.errors()[0].get("msg", str(exc))
+
+
+def _collect_queue_stats(
+    session: Session, experiment_ids: list[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    total = sa.func.count(ExperimentQueueRecord.id).label("total")
+    pending = sa.func.sum(
+        sa.case(
+            (ExperimentQueueRecord.status == ExperimentQueueStatus.PENDING.value, 1),
+            else_=0,
+        )
+    ).label("pending")
+    in_progress = sa.func.sum(
+        sa.case(
+            (ExperimentQueueRecord.status == ExperimentQueueStatus.IN_PROGRESS.value, 1),
+            else_=0,
+        )
+    ).label("in_progress")
+    completed = sa.func.sum(
+        sa.case(
+            (ExperimentQueueRecord.status == ExperimentQueueStatus.COMPLETED.value, 1),
+            else_=0,
+        )
+    ).label("completed")
+    failed = sa.func.sum(
+        sa.case(
+            (ExperimentQueueRecord.status == ExperimentQueueStatus.FAILED.value, 1),
+            else_=0,
+        )
+    ).label("failed")
+
+    stmt = (
+        sa.select(
+            ExperimentQueueRecord.experiment_id,
+            total,
+            pending,
+            in_progress,
+            completed,
+            failed,
+            sa.func.min(ExperimentQueueRecord.started_at).label("first_started_at"),
+            sa.func.max(ExperimentQueueRecord.completed_at).label("last_completed_at"),
+        )
+        .group_by(ExperimentQueueRecord.experiment_id)
+    )
+    if experiment_ids:
+        stmt = stmt.where(ExperimentQueueRecord.experiment_id.in_(experiment_ids))
+
+    stats: dict[str, dict[str, Any]] = {}
+    for row in session.exec(stmt):
+        stats[row.experiment_id] = {
+            "total": row.total or 0,
+            "pending": row.pending or 0,
+            "in_progress": row.in_progress or 0,
+            "completed": row.completed or 0,
+            "failed": row.failed or 0,
+            "first_started_at": row.first_started_at,
+            "last_completed_at": row.last_completed_at,
+        }
+    return stats
+
+
+@app.post("/run-batch/upload")
+async def upload_experiment_items(file: UploadFile = File(...)) -> dict:
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    decoded = _decode_upload_bytes(payload)
+    filename = (file.filename or "").lower()
+    fmt = "jsonl" if filename.endswith(".jsonl") else "csv"
+
+    try:
+        raw_rows = (
+            _load_rows_from_jsonl(decoded) if fmt == "jsonl" else _load_rows_from_csv(decoded)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    items: list[ExperimentItem] = []
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+
+    for idx, row in enumerate(raw_rows, start=1):
+        item, row_warnings, error = _row_to_experiment_item(row)
+        if row_warnings:
+            warnings.extend({"row": idx, "message": w} for w in row_warnings)
+        if error:
+            errors.append({"row": idx, "error": error})
+            continue
+        if item is None:
+            continue
+        items.append(item)
+
+    preview = [item.model_dump() for item in items[:5]]
+    return {
+        "format": fmt,
+        "count": len(items),
+        "items": [item.model_dump() for item in items],
+        "preview": preview,
+        "errors": errors,
+        "warnings": warnings,
+        "schema_hint": {
+            "required": _CSV_REQUIRED_COLUMNS,
+            "optional": _CSV_OPTIONAL_COLUMNS,
+            "system_params_prefix": f"{_SYSTEM_PARAMS_PREFIX}.*",
+        },
+        "columns": list(raw_rows[0].keys()) if raw_rows else [],
+    }
+
+
 @app.post("/run-batch")
 async def run_batch(payload: RunBatchRequest) -> dict:
-    """Sequentially execute multiple runs under a shared experiment identifier."""
+    """Queue experiment runs for asynchronous execution."""
 
     experiment_payload = {
         "network": payload.network,
         "agent_key": payload.agent_key,
         "version": payload.version,
         "model": payload.model,
+        "max_steps": payload.max_steps,
+        "shared_system_params": payload.shared_system_params,
         "items": [item.model_dump() for item in payload.items],
     }
 
-    try:
-        from sqlalchemy import select
-        from arion_agents.db import get_session
-        from arion_agents.run_models import ExperimentRecord
-
-        with get_session() as db:
-            stmt = select(ExperimentRecord).where(
-                ExperimentRecord.experiment_id == payload.experiment_id
-            )
-            existing = db.exec(stmt).scalars().first()
-            if existing:
-                existing.description = payload.experiment_desc
-                existing.payload = experiment_payload
-            else:
-                db.add(
-                    ExperimentRecord(
-                        experiment_id=payload.experiment_id,
-                        description=payload.experiment_desc,
-                        payload=experiment_payload,
-                    )
-                )
-    except Exception:
-        # Best-effort bookkeeping; continue even if experiment log fails.
-        pass
-
-    runs: List[Dict[str, Any]] = []
+    queue_records: List[ExperimentQueueRecord] = []
     for item_index, item in enumerate(payload.items):
         total_iterations = max(int(item.iterations or 0), 0)
         if total_iterations == 0:
@@ -471,24 +916,149 @@ async def run_batch(payload: RunBatchRequest) -> dict:
                     "iterations": item.iterations,
                     "user_message": item.user_message,
                 },
+                max_steps=payload.max_steps,
             )
 
-            result = await run_once(request)
-            runs.append(
-                {
-                    "trace_id": result.get("trace_id"),
-                    "item_index": item_index,
-                    "iteration": iteration,
-                    "status": ((result.get("final") or {}).get("status")),
-                }
+            queue_records.append(
+                ExperimentQueueRecord(
+                    experiment_id=payload.experiment_id,
+                    item_index=item_index,
+                    iteration=iteration,
+                    payload=request.model_dump(),
+                )
             )
+
+    total_runs = len(queue_records)
+    if total_runs == 0:
+        raise HTTPException(status_code=400, detail="No iterations to queue")
+
+    try:
+        with get_session() as db:
+            stmt = sa.select(ExperimentRecord).where(
+                ExperimentRecord.experiment_id == payload.experiment_id
+            )
+            existing = db.exec(stmt).scalars().first()
+            if existing:
+                existing.description = payload.experiment_desc
+                existing.payload = experiment_payload
+            else:
+                db.add(
+                    ExperimentRecord(
+                        experiment_id=payload.experiment_id,
+                        description=payload.experiment_desc,
+                        payload=experiment_payload,
+                    )
+                )
+            enqueue_queue_items(db, queue_records)
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to store experiment metadata")
+        raise HTTPException(status_code=500, detail="Failed to queue experiment runs")
+
+    await _ensure_queue_worker()
 
     return {
         "experiment_id": payload.experiment_id,
         "experiment_desc": payload.experiment_desc,
-        "total_runs": len(runs),
-        "runs": runs,
+        "queued": True,
+        "total_runs": total_runs,
     }
+
+
+@app.get("/experiments")
+async def list_experiments() -> list[dict]:
+    with get_session() as db:
+        experiments = (
+            db.exec(
+                sa.select(ExperimentRecord).order_by(ExperimentRecord.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        experiment_ids = [exp.experiment_id for exp in experiments]
+        stats_map = _collect_queue_stats(db, experiment_ids)
+
+        results: list[dict[str, Any]] = []
+        for exp in experiments:
+            stats = stats_map.get(exp.experiment_id, {})
+            results.append(
+                {
+                    "experiment_id": exp.experiment_id,
+                    "description": exp.description,
+                    "created_at": exp.created_at,
+                    "updated_at": exp.updated_at,
+                    "total_runs": stats.get("total", 0),
+                    "queued": stats.get("pending", 0),
+                    "in_progress": stats.get("in_progress", 0),
+                    "completed": stats.get("completed", 0),
+                    "failed": stats.get("failed", 0),
+                    "started_at": stats.get("first_started_at"),
+                    "completed_at": stats.get("last_completed_at"),
+                }
+            )
+
+    return results
+
+
+@app.get("/experiments/{experiment_id}")
+async def get_experiment_detail(experiment_id: str) -> dict:
+    with get_session() as db:
+        stmt = sa.select(ExperimentRecord).where(
+            ExperimentRecord.experiment_id == experiment_id
+        )
+        experiment = db.exec(stmt).scalars().first()
+        if experiment is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        stats = _collect_queue_stats(db, [experiment_id]).get(experiment_id, {})
+        queue_stmt = (
+            sa.select(ExperimentQueueRecord)
+            .where(ExperimentQueueRecord.experiment_id == experiment_id)
+            .order_by(ExperimentQueueRecord.item_index, ExperimentQueueRecord.iteration)
+        )
+        queue_items = db.exec(queue_stmt).scalars().all()
+
+        items_payload = []
+        for item in queue_items:
+            status_value = (
+                item.status.value
+                if isinstance(item.status, ExperimentQueueStatus)
+                else str(item.status)
+            )
+            items_payload.append(
+                {
+                    "id": item.id,
+                    "item_index": item.item_index,
+                    "iteration": item.iteration,
+                    "status": status_value,
+                    "enqueued_at": item.enqueued_at,
+                    "started_at": item.started_at,
+                    "completed_at": item.completed_at,
+                    "error": item.error,
+                    "result": item.result,
+                }
+            )
+
+        response = {
+            "experiment": {
+                "experiment_id": experiment.experiment_id,
+                "description": experiment.description,
+                "payload": experiment.payload,
+                "created_at": experiment.created_at,
+                "updated_at": experiment.updated_at,
+            },
+            "queue": {
+                "total_runs": stats.get("total", 0),
+                "queued": stats.get("pending", 0),
+                "in_progress": stats.get("in_progress", 0),
+                "completed": stats.get("completed", 0),
+                "failed": stats.get("failed", 0),
+                "started_at": stats.get("first_started_at"),
+                "completed_at": stats.get("last_completed_at"),
+                "items": items_payload,
+            },
+        }
+
+    return response
 
 
 def _load_graph_from_db(network: str, version: int | None) -> GraphBundle:
@@ -563,6 +1133,10 @@ def _build_run_config_from_graph(
             status_code=404, detail=f"Agent '{agent_key}' not in snapshot"
         )
 
+    display_name = agent.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        display_name = agent.get("key")
+
     equipped = list(agent.get("equipped_tools", []))
     routes = list(agent.get("allowed_routes", []))
     metadata = agent.get("metadata") or {}
@@ -606,6 +1180,15 @@ def _build_run_config_from_graph(
             "description": item.get("description") or None,
         }
 
+    respond_cfg = graph.get("respond") if isinstance(graph, dict) else None
+    respond_payload_schema = None
+    respond_payload_guidance = None
+    respond_payload_example = None
+    if isinstance(respond_cfg, dict):
+        respond_payload_schema = respond_cfg.get("payload_schema")
+        respond_payload_guidance = respond_cfg.get("payload_guidance")
+        respond_payload_example = respond_cfg.get("payload_example")
+
     return RunConfig(
         current_agent=agent["key"],
         equipped_tools=equipped,
@@ -617,21 +1200,34 @@ def _build_run_config_from_graph(
         allow_task_respond=allow_task_respond,
         system_params=system_params or {},
         prompt=prompt,
+        respond_payload_schema=respond_payload_schema,
+        respond_payload_guidance=respond_payload_guidance,
+        respond_payload_example=respond_payload_example,
+        display_name=display_name,
     )
 
 
 def _load_run_record(run_id: str):
-    from sqlalchemy import select
-    from arion_agents.run_models import RunRecord
-    from arion_agents.db import get_session
-
     with get_session() as db:
-        stmt = select(RunRecord).where(RunRecord.run_id == run_id)
+        stmt = sa.select(RunRecord).where(RunRecord.run_id == run_id)
         run = db.exec(stmt).scalars().first()
         if run is None:
             return None
         db.expunge(run)
         return run
+
+
+@lru_cache(maxsize=256)
+def _lookup_network_name(network_id: int) -> Optional[str]:
+    from arion_agents.config_models import Network  # local import avoids circular deps
+
+    with get_session() as db:
+        net = db.get(Network, network_id)
+        if not net:
+            return None
+        name = net.name
+        db.expunge(net)
+        return name
 
 
 def _run_record_to_snapshot(record, include_steps: bool = True) -> dict:
@@ -679,6 +1275,23 @@ def _run_record_to_snapshot(record, include_steps: bool = True) -> dict:
         "user_message": record.user_message,
         "system_params": response_system_params,
     }
+    network_name: Optional[str] = None
+    if record.network_id:
+        try:
+            network_name = _lookup_network_name(record.network_id)
+        except Exception:
+            network_name = None
+    request_payload = record.request_payload if isinstance(record.request_payload, dict) else {}
+    if not network_name:
+        candidate = request_payload.get("network_name")
+        if isinstance(candidate, str) and candidate.strip():
+            network_name = candidate.strip()
+    if not network_name:
+        candidate = request_payload.get("network")
+        if isinstance(candidate, str) and candidate.strip():
+            network_name = candidate.strip()
+    if network_name is not None:
+        metadata["network_name"] = network_name
     if response_model is not None:
         metadata["model"] = response_model
     if response_totals is not None:
@@ -721,16 +1334,15 @@ async def invoke(payload: InvokeRequest) -> dict:
 
 
 @app.get("/runs")
-async def list_runs(limit: int = 20) -> list[dict]:
-    from sqlalchemy import select
-    from arion_agents.run_models import RunRecord
-    from arion_agents.db import get_session
-
+async def list_runs(limit: int = 20, experiment_id: str | None = None) -> list[dict]:
     if limit <= 0:
         limit = 20
 
     with get_session() as db:
-        stmt = select(RunRecord).order_by(RunRecord.created_at.desc()).limit(limit)
+        stmt = sa.select(RunRecord).order_by(RunRecord.created_at.desc())
+        if experiment_id:
+            stmt = stmt.where(RunRecord.experiment_id == experiment_id)
+        stmt = stmt.limit(limit)
         records = list(db.exec(stmt).scalars())
         for rec in records:
             db.expunge(rec)
@@ -810,13 +1422,11 @@ async def resolve_prompt(payload: ResolvePromptRequest) -> dict:
             )
 
         cfg = _build_run_config_from_graph(graph, agent_key, True, {})
-        constraints = build_constraints(cfg)
-        context = build_context(payload.user_message, exec_log=[], full_tool_outputs=[])
         tool_defs = build_tool_definitions(cfg)
         route_defs = build_route_definitions(cfg)
-        prompt = build_prompt(
-            cfg, cfg.prompt, context, constraints, tool_defs, route_defs
-        )
+        constraints = build_constraints(cfg, tool_defs, route_defs)
+        context = build_context(payload.user_message, exec_log=[], full_tool_outputs=[])
+        prompt = build_prompt(cfg, cfg.prompt, context, constraints)
         return {"agent_key": agent_key, "prompt": prompt}
     except HTTPException:
         raise
