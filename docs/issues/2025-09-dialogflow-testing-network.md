@@ -78,12 +78,11 @@ A mechanism is needed to run tests in batches (e.g., 20 questions, 5 times each)
 - **Implemented:** `/run-batch` API accepts structured experiment payloads (CSV parsing still TODO upstream UI).
 
 ### CSV → Experiment payload mapping
-- **Required column:** `iterations` (positive integer). All other columns are optional augmentations that flow into the `ExperimentItem` payload.
+- **Required columns:** `iterations` (positive integer) and `run_input` (seed text delivered to the agent as the initial user message). All other columns are optional augmentations that flow into the `ExperimentItem` payload.
 - Suggested optional headers:
-  - `issue_description` → becomes part of the run’s user prompt context (prepended/embedded ahead of `user_message`).
+  - `issue_description` → becomes part of the run’s user prompt context (prepended/embedded ahead of `run_input`).
   - `true_solution_description` → mapped to `correct_answer` for downstream evaluation.
   - `stopping_conditions` → appended to the agent instructions for that run; these are soft per-session hints, not hard orchestrator limits.
-  - `user_message` → seed message to kick off the run (defaults to the base operator prompt if omitted).
   - `system_params.*` → any header prefixed with `system_params.` feeds into per-item system overrides (e.g., `system_params.username`).
   - Additional columns land under `metadata` for analytics.
 
@@ -93,7 +92,7 @@ A mechanism is needed to run tests in batches (e.g., 20 questions, 5 times each)
 - Hard failures (tool errors, LLM exceptions) bubble up as normal and cause the iteration to terminate.
 
 ### UX & async execution
-- Upload CSV/JSONL, preview inferred mappings, allow overrides, and produce the structured experiment payload. Surface inline helper text summarising required vs. optional columns (at minimum: `iterations` required; `issue_description`, `true_solution_description`, `stopping_conditions`, `user_message`, `system_params.*` optional).
+- Upload CSV/JSONL, preview inferred mappings, allow overrides, and produce the structured experiment payload. Surface inline helper text summarising required vs. optional columns (at minimum: `iterations`, `run_input` required; `issue_description`, `true_solution_description`, `stopping_conditions`, `system_params.*` optional).
 - Kick off batch runs asynchronously: enqueue work and return a handle so the UI can poll progress, stream per-item results, and download consolidated transcripts.
 - Minimal async design: persist an `experiment_queue` row per item, let the API return immediately, and run a lightweight background worker (FastAPI `BackgroundTasks` initially, extracted to a dedicated process as volume grows) that dequeues sequential runs and records status/progress timestamps.
 - Provide a CLI helper (e.g., `tools/run_experiment.py`) that mirrors the UI contract for automation and smoke testing.

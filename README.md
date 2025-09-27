@@ -69,6 +69,69 @@ The Experiments workspace lets operators queue multi-run validations against a p
 - `/run` accepts either a `network` name (fetched from Postgres) or an inline `snapshot` payload. Inline snapshots are ideal for load tests and local experiments.
 - `/invoke` executes a single structured instruction against a compiled graph—useful for testing tool constraints without calling the LLM.
 
+### Request & Response Contracts
+
+`/run` is a JSON-over-HTTP endpoint. Clients **do not** need to stringify nested JSON payloads—provide structured objects directly. A typical request looks like:
+
+```json
+POST /run
+Content-Type: application/json
+
+{
+  "network": "email_responder",
+  "user_message": "Draft a reply to the customer below",
+  "system_params": {
+    "email": {
+      "subject": "Payment question",
+      "body": "Hi team, can you confirm the invoice status?"
+    },
+    "thread_id": "AA-12345"
+  },
+  "debug": false
+}
+```
+
+Networks can define a RESPOND payload contract by storing JSON Schema under `additional_data.respond_payload_schema`. For an email workflow you might configure:
+
+```json
+{
+  "respond_payload_schema": {
+    "type": "object",
+    "properties": {
+      "email_subject": {"type": "string"},
+      "email_body": {"type": "string"},
+      "notes": {"type": "string"}
+    },
+    "required": ["email_subject", "email_body"],
+    "additionalProperties": false
+  },
+  "respond_payload_guidance": "Return a ready-to-send email.",
+  "respond_payload_example": {
+    "email_subject": "Re: Payment question",
+    "email_body": "Hi Alex, thanks for reaching out..."
+  }
+}
+```
+
+When the RESPOND-capable agent emits a payload matching that schema, the `/run` HTTP response includes it in the JSON body:
+
+```json
+{
+  "trace_id": "08c5...",
+  "graph_version_id": "45",
+  "execution_log": [...],
+  "final": {
+    "response_payload": {
+      "email_subject": "Re: Payment question",
+      "email_body": "Hi Alex, thanks for reaching out...",
+      "notes": "Cited invoice INV-778"
+    }
+  }
+}
+```
+
+Downstream services can parse `final.response_payload` directly—no extra decoding layers are required. If `debug=true`, the response also contains intermediate prompts, tool results, and decision traces alongside the same JSON payload.
+
 ## Unified HTTP Tool Provider
 
 Every outbound HTTP tool is powered by the `http:request` provider. Tool metadata defines:

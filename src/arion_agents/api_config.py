@@ -5,7 +5,7 @@ import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import SQLModel, Session, select, func
 
 from .db import get_session
@@ -22,6 +22,8 @@ from .config_validation import (
     NetworkConstraintError,
     validate_network_constraints,
 )
+
+from .logs.execution_log_policy import ExecutionLogPolicy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -239,9 +241,7 @@ def _load_compiled_agent_metadata(
             CompiledSnapshot.network_version_id.in_(snapshot_version_ids)
         )
     ).all()
-    snapshot_by_version = {
-        snap.network_version_id: snap for snap in snapshots
-    }
+    snapshot_by_version = {snap.network_version_id: snap for snap in snapshots}
 
     for net in nets:
         prompts: Dict[str, Optional[str]] = {}
@@ -996,7 +996,8 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
             default_agent_key = a.key
             break
 
-    respond_config = {}
+    respond_config: dict = {}
+    execution_log_policy_dump = None
     net_meta = net.additional_data if isinstance(net.additional_data, dict) else {}
     if isinstance(net_meta, dict):
         payload_schema = net_meta.get("respond_payload_schema")
@@ -1010,6 +1011,17 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
                 respond_config["payload_guidance"] = payload_guidance
             if payload_example:
                 respond_config["payload_example"] = payload_example
+        execution_log_raw = net_meta.get("execution_log")
+        if execution_log_raw:
+            try:
+                execution_log_policy_dump = ExecutionLogPolicy.model_validate(
+                    execution_log_raw
+                ).model_dump()
+            except (ValueError, ValidationError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"invalid execution_log config: {exc}",
+                ) from exc
 
     compiled = {
         "version_id": version_id,
@@ -1019,6 +1031,8 @@ def _compile_snapshot(db: Session, network_id: int, version_id: int) -> dict:
     }
     if respond_config:
         compiled["respond"] = respond_config
+    if execution_log_policy_dump:
+        compiled["execution_log"] = execution_log_policy_dump
     return compiled
 
 

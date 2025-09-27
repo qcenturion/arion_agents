@@ -1,10 +1,17 @@
 "use client";
 
+import clsx from "clsx";
 import { useMemo } from "react";
 import { useCurrentStep } from "@/stores/usePlaybackStore";
 import { summarizeAgentPayload, summarizeToolPayload, type TimelineStatus } from "./stepSummaries";
 
-export function StepDetailsPanel() {
+interface StepDetailsPanelProps {
+  className?: string;
+  variant?: "sidebar" | "stacked";
+  fluid?: boolean;
+}
+
+export function StepDetailsPanel({ className, variant = "sidebar", fluid = false }: StepDetailsPanelProps = {}) {
   const current = useCurrentStep();
 
   const content = useMemo(() => {
@@ -41,8 +48,24 @@ export function StepDetailsPanel() {
 
   const timestampLabel = current ? new Date(current.t).toLocaleString() : null;
 
+  const isSidebar = variant === "sidebar";
+  const RootTag: keyof JSX.IntrinsicElements = isSidebar ? "aside" : "section";
+  const rootClass = clsx(
+    isSidebar
+      ? clsx(
+          "flex flex-col border-l border-white/5 bg-surface/80",
+          fluid ? "flex-1 min-w-0" : "w-[420px]"
+        )
+      : "hidden flex-col border-t border-white/5 bg-surface/80 lg:flex",
+    className
+  );
+  const bodyClass = clsx(
+    "overflow-y-auto p-4 text-sm text-foreground/80",
+    isSidebar ? "min-h-0 flex-1" : "max-h-[420px]"
+  );
+
   return (
-    <aside className="hidden w-[420px] flex-col border-l border-white/5 bg-surface/80 lg:flex">
+    <RootTag className={rootClass}>
       <div className="border-b border-white/5 px-4 py-3">
         <div className="text-xs uppercase tracking-wide text-foreground/50">Step Detail</div>
         {current ? (
@@ -52,8 +75,8 @@ export function StepDetailsPanel() {
           </div>
         ) : null}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm text-foreground/80">{content}</div>
-    </aside>
+      <div className={bodyClass}>{content}</div>
+    </RootTag>
   );
 }
 

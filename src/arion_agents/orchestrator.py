@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
+from arion_agents.logs.execution_log_policy import ExecutionLogPolicy
+
 
 class UseToolAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -57,7 +59,9 @@ class TaskGroupDelegate(TaskGroupTaskBase):
 
     @field_validator("delegation_details")
     @classmethod
-    def _validate_details(cls, value: List[DelegationDetails]) -> List[DelegationDetails]:
+    def _validate_details(
+        cls, value: List[DelegationDetails]
+    ) -> List[DelegationDetails]:
         if not value:
             raise ValueError("delegation_details must contain at least one assignment")
         return value
@@ -131,9 +135,12 @@ class RunConfig(BaseModel):
     respond_payload_guidance: Optional[str] = None
     respond_payload_example: Optional[Dict[str, Any]] = None
     display_name: Optional[str] = None
+    execution_log_policy: Optional[ExecutionLogPolicy] = None
 
 
-def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> OrchestratorResult:
+def execute_instruction(
+    instr: Instruction, cfg: Optional[RunConfig] = None
+) -> OrchestratorResult:
     # RESPOND
     if isinstance(instr.action, RespondAction):
         if cfg and not cfg.allow_respond:
@@ -164,7 +171,10 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
         if cfg:
             tspec = cfg.tools_map.get(instr.action.tool_name)
         if not tspec:
-            return OrchestratorResult(status="retry", error=f"Tool '{instr.action.tool_name}' is not configured")
+            return OrchestratorResult(
+                status="retry",
+                error=f"Tool '{instr.action.tool_name}' is not configured",
+            )
 
         # Validate parameters against runtime params_schema
         # params_schema format: { name: { source: 'agent'|'system', required: bool, default?: any } }
@@ -172,17 +182,30 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
         params = dict(instr.action.tool_params or {})
 
         # Agent must not supply system-provided params
-        system_names = {k for k, v in schema.items() if (v or {}).get("source") == "system"}
+        system_names = {
+            k for k, v in schema.items() if (v or {}).get("source") == "system"
+        }
         forbidden = sorted(system_names.intersection(params.keys()))
         if forbidden:
-            return OrchestratorResult(status="retry", error=f"System params must not be provided by agent: {forbidden}")
+            return OrchestratorResult(
+                status="retry",
+                error=f"System params must not be provided by agent: {forbidden}",
+            )
 
         # Ensure required agent params
         missing_agent = sorted(
-            [k for k, v in schema.items() if (v or {}).get("source", "agent") == "agent" and (v or {}).get("required") and k not in params]
+            [
+                k
+                for k, v in schema.items()
+                if (v or {}).get("source", "agent") == "agent"
+                and (v or {}).get("required")
+                and k not in params
+            ]
         )
         if missing_agent:
-            return OrchestratorResult(status="retry", error=f"Missing required params: {missing_agent}")
+            return OrchestratorResult(
+                status="retry", error=f"Missing required params: {missing_agent}"
+            )
 
         # Merge system params and defaults
         merged: Dict[str, Any] = dict(params)
@@ -191,7 +214,9 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
                 src = (v or {}).get("source", "agent")
                 if src == "system":
                     if (v or {}).get("required") and k not in cfg.system_params:
-                        return OrchestratorResult(status="error", error=f"Missing system param: {k}")
+                        return OrchestratorResult(
+                            status="error", error=f"Missing system param: {k}"
+                        )
                     if k in cfg.system_params:
                         merged[k] = cfg.system_params[k]
                 # defaults
@@ -203,6 +228,7 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
             # If tool metadata includes a JSON Schema for agent params, validate here
             from jsonschema import validate as _js_validate  # type: ignore
             from jsonschema import ValidationError as _JSValidationError  # type: ignore
+
             meta_schema = getattr(tspec, "metadata", None) or {}
             agent_params_schema = None
             if isinstance(meta_schema, dict):
@@ -211,7 +237,10 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
                 try:
                     _js_validate(instance=params, schema=agent_params_schema)
                 except _JSValidationError as ve:  # pragma: no cover
-                    return OrchestratorResult(status="retry", error=f"tool_params do not match schema: {ve.message}")
+                    return OrchestratorResult(
+                        status="retry",
+                        error=f"tool_params do not match schema: {ve.message}",
+                    )
         except Exception:
             # jsonschema not available or unexpected error; proceed with built-in validation
             pass
@@ -232,14 +261,29 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
             secret_value = resolve_secret(tspec.secret_ref)
             tool = instantiate_tool(tool_cfg, secret_value)
             import time
+
             t0 = time.perf_counter()
-            out = tool.run(ToolRunInput(params=merged, system=cfg.system_params, metadata=tspec.metadata))
+            out = tool.run(
+                ToolRunInput(
+                    params=merged, system=cfg.system_params, metadata=tspec.metadata
+                )
+            )
             dur_ms = int((time.perf_counter() - t0) * 1000)
             if out.ok:
-                return OrchestratorResult(status="ok", response={"tool": tspec.key, "params": merged, "result": out.result, "duration_ms": dur_ms})
+                return OrchestratorResult(
+                    status="ok",
+                    response={
+                        "tool": tspec.key,
+                        "params": merged,
+                        "result": out.result,
+                        "duration_ms": dur_ms,
+                    },
+                )
             return OrchestratorResult(status="error", error=out.error or "tool error")
         except Exception as e:
-            return OrchestratorResult(status="error", error=f"tool execution failed: {e}")
+            return OrchestratorResult(
+                status="error", error=f"tool execution failed: {e}"
+            )
 
     # ROUTE_TO_AGENT
     if isinstance(instr.action, RouteToAgentAction):
@@ -248,6 +292,8 @@ def execute_instruction(instr: Instruction, cfg: Optional[RunConfig] = None) -> 
                 status="retry",
                 error=f"Route to '{instr.action.target_agent_name}' not permitted",
             )
-        return OrchestratorResult(status="not_implemented", next_agent=instr.action.target_agent_name)
+        return OrchestratorResult(
+            status="not_implemented", next_agent=instr.action.target_agent_name
+        )
 
     return OrchestratorResult(status="not_implemented")

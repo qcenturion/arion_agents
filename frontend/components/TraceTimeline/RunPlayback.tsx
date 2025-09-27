@@ -1,5 +1,6 @@
 "use client";
 
+import clsx from "clsx";
 import { useEffect, useMemo } from "react";
 import { subscribeToRunSteps } from "@/lib/api/runs";
 import type { RunEnvelope } from "@/lib/api/types";
@@ -17,9 +18,10 @@ interface RunPlaybackProps {
   initialSteps: RunEnvelope[];
   graphVersionId?: string | null;
   networkName?: string | null;
+  variant?: "default" | "modal";
 }
 
-export function RunPlayback({ traceId, initialSteps, graphVersionId, networkName }: RunPlaybackProps) {
+export function RunPlayback({ traceId, initialSteps, graphVersionId, networkName, variant = "default" }: RunPlaybackProps) {
   const setInitialSteps = usePlaybackStore((state) => state.setInitialSteps);
   const appendStep = usePlaybackStore((state) => state.appendStep);
   const reset = usePlaybackStore((state) => state.reset);
@@ -64,30 +66,50 @@ export function RunPlayback({ traceId, initialSteps, graphVersionId, networkName
     return undefined;
   }, [graphVersionId, networkName]);
 
-  const content = view === "timeline" ? (
-    <div className="flex w-[360px] flex-col border-r border-white/5 bg-surface/70">
-      <PlaybackToolbar traceId={traceId} />
-      <div className="flex min-h-0 flex-1 flex-col">
-        <TraceTimelinePanel />
-      </div>
-      {latency ? (
-        <div className="border-t border-white/5 px-4 py-3 text-xs text-foreground/50">
-          Total latency · {formatDuration(latency.totalMs)}
+  const isModal = variant === "modal";
+
+  const effectiveView = isModal ? "timeline" : view;
+
+  const timelineLayout = (
+    <div className="flex flex-1 flex-row min-h-0">
+      <div
+        className={clsx(
+          "flex flex-col border-r border-white/5 bg-surface/70",
+          isModal ? "w-[260px]" : "w-[360px]"
+        )}
+      >
+        <div className="flex min-h-0 flex-1 flex-col">
+          <TraceTimelinePanel />
         </div>
-      ) : null}
-    </div>
-  ) : (
-    <div className="flex min-w-0 flex-1 flex-col border-r border-white/5 bg-surface/70">
-      <PlaybackToolbar traceId={traceId} />
-      <RunFlowGraph steps={steps} networkName={resolvedNetworkName} />
+        {latency ? (
+          <div className="border-t border-white/5 px-4 py-3 text-xs text-foreground/50">
+            Total latency · {formatDuration(latency.totalMs)}
+          </div>
+        ) : null}
+      </div>
+      <StepDetailsPanel className={clsx(isModal ? "flex-[3]" : undefined)} fluid={isModal} />
+      {isModal ? null : <EvidencePanel />}
     </div>
   );
 
-  return (
-    <div className="flex h-full min-h-0 flex-1 flex-row">
-      {content}
-      <StepDetailsPanel />
+  const graphLayout = (
+    <>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col border-r border-white/5 bg-surface/70">
+          <RunFlowGraph steps={steps} networkName={resolvedNetworkName} />
+        </div>
+        <StepDetailsPanel variant="stacked" />
+      </div>
       <EvidencePanel />
+    </>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <PlaybackToolbar traceId={traceId} />
+      <div className="flex flex-1 flex-row min-h-0">
+        {effectiveView === "timeline" ? timelineLayout : graphLayout}
+      </div>
     </div>
   );
 }

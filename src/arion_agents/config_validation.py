@@ -12,7 +12,7 @@ from typing import Iterable
 
 from sqlmodel import Session, select
 
-from .config_models import Agent
+from .config_models import Agent, Network
 
 
 @dataclass
@@ -55,3 +55,19 @@ def validate_network_constraints(db: Session, network_id: int) -> None:
         raise NetworkConstraintError(
             f"Multiple default agents configured ({keys}); mark a single default agent."
         )
+
+    # Validate force_respond settings
+    network = db.get(Network, network_id)
+    if network and network.additional_data:
+        force_respond = network.additional_data.get("force_respond")
+        force_respond_agent = network.additional_data.get("force_respond_agent")
+        if force_respond:
+            if not force_respond_agent:
+                raise NetworkConstraintError(
+                    "If force_respond is enabled, force_respond_agent must be set."
+                )
+            agent_keys = {agent.key for agent in agents}
+            if force_respond_agent not in agent_keys:
+                raise NetworkConstraintError(
+                    f"force_respond_agent '{force_respond_agent}' is not a valid agent in this network."
+                )

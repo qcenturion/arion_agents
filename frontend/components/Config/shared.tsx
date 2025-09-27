@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -8,6 +8,8 @@ import {
   testTool,
   updateAgent,
   updateTool,
+  duplicateAgent,
+  duplicateTool,
   type AgentUpdatePayload,
   type ToolTestPayload,
   type ToolUpdatePayload
@@ -99,6 +101,15 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
   const [isDefault, setIsDefault] = useState(agent.is_default);
   const [promptTemplate, setPromptTemplate] = useState(agent.prompt_template ?? "");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isCloning, setIsCloning] = useState(false);
+  const [cloneKey, setCloneKey] = useState(`${agent.key}_copy`);
+  const [cloneDisplayName, setCloneDisplayName] = useState(agent.display_name ?? "");
+  const [cloneDescription, setCloneDescription] = useState(agent.description ?? "");
+  const [cloneAllowRespond, setCloneAllowRespond] = useState(agent.allow_respond);
+  const [cloneIsDefault, setCloneIsDefault] = useState(false);
+  const [clonePromptTemplate, setClonePromptTemplate] = useState(agent.prompt_template ?? "");
+  const [cloneError, setCloneError] = useState<string | null>(null);
+  const [cloneToast, setCloneToast] = useState<string | null>(null);
 
   useEffect(() => {
     setDisplayName(agent.display_name ?? "");
@@ -106,7 +117,24 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
     setAllowRespond(agent.allow_respond);
     setIsDefault(agent.is_default);
     setPromptTemplate(agent.prompt_template ?? "");
-  }, [agent.display_name, agent.description, agent.allow_respond, agent.id, agent.is_default, agent.prompt_template]);
+    setCloneKey(`${agent.key}_copy`);
+    setCloneDisplayName(agent.display_name ?? "");
+    setCloneDescription(agent.description ?? "");
+    setCloneAllowRespond(agent.allow_respond);
+    setCloneIsDefault(false);
+    setClonePromptTemplate(agent.prompt_template ?? "");
+    setCloneError(null);
+    setCloneToast(null);
+    setIsCloning(false);
+  }, [
+    agent.key,
+    agent.display_name,
+    agent.description,
+    agent.allow_respond,
+    agent.id,
+    agent.is_default,
+    agent.prompt_template
+  ]);
 
   const mutation = useMutation({
     mutationFn: (payload: AgentUpdatePayload) => updateAgent(agent.network_id, agent.id, payload),
@@ -122,6 +150,38 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
     },
     onError: (err) => {
       setErrorMessage(extractApiErrorMessage(err));
+    }
+  });
+
+  const cloneMutation = useMutation({
+    mutationFn: (payload: {
+      key: string;
+      display_name?: string | null;
+      description?: string | null;
+      allow_respond: boolean;
+      is_default: boolean;
+      prompt_template?: string | null;
+    }) =>
+      duplicateAgent({
+        networkId: agent.network_id,
+        source: agent,
+        key: payload.key,
+        display_name: payload.display_name,
+        description: payload.description,
+        allow_respond: payload.allow_respond,
+        is_default: payload.is_default,
+        prompt_template: payload.prompt_template
+      }),
+    onSuccess: (data) => {
+      setCloneError(null);
+      setCloneToast(`Cloned agent to '${data.key}'`);
+      setIsCloning(false);
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["networks"] });
+    },
+    onError: (err) => {
+      setCloneToast(null);
+      setCloneError(extractApiErrorMessage(err));
     }
   });
 
@@ -149,6 +209,52 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
       prompt_template: promptTemplate ?? ""
     };
     mutation.mutate(payload);
+  };
+
+  const toggleClone = () => {
+    if (cloneMutation.isPending) {
+      return;
+    }
+    if (isCloning) {
+      setIsCloning(false);
+      setCloneError(null);
+      return;
+    }
+    setCloneToast(null);
+    setCloneError(null);
+    setCloneKey(`${agent.key}_copy`);
+    setCloneDisplayName(agent.display_name ?? "");
+    setCloneDescription(agent.description ?? "");
+    setCloneAllowRespond(agent.allow_respond);
+    setCloneIsDefault(false);
+    setClonePromptTemplate(agent.prompt_template ?? "");
+    setIsCloning(true);
+  };
+
+  const handleCloneSave = () => {
+    setCloneError(null);
+    setCloneToast(null);
+    const trimmedKey = cloneKey.trim();
+    if (!trimmedKey) {
+      setCloneError("New agent key is required");
+      return;
+    }
+    if (trimmedKey.toLowerCase() === agent.key.toLowerCase()) {
+      setCloneError("Choose a different key for the clone");
+      return;
+    }
+    if (cloneIsDefault && !cloneAllowRespond) {
+      setCloneError("Default agents must allow RESPOND");
+      return;
+    }
+    cloneMutation.mutate({
+      key: trimmedKey,
+      display_name: cloneDisplayName.trim() ? cloneDisplayName.trim() : null,
+      description: cloneDescription.trim() ? cloneDescription.trim() : null,
+      allow_respond: cloneAllowRespond,
+      is_default: cloneIsDefault,
+      prompt_template: clonePromptTemplate.trim() ? clonePromptTemplate : null
+    });
   };
 
   const capabilityBadges = [
@@ -185,16 +291,112 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              className="rounded border border-white/10 px-3 py-1 text-sm text-foreground/70 hover:border-white/30"
-              onClick={() => setIsEditing(true)}
-            >
-              Edit
-            </button>
+            <>
+              <button
+                type="button"
+                className="rounded border border-white/10 px-3 py-1 text-sm text-foreground/70 hover:border-white/30 disabled:opacity-60"
+                onClick={toggleClone}
+                disabled={cloneMutation.isPending}
+              >
+                {cloneMutation.isPending ? "Cloning…" : isCloning ? "Close clone" : "Clone"}
+              </button>
+              <button
+                type="button"
+                className="rounded border border-white/10 px-3 py-1 text-sm text-foreground/70 hover:border-white/30"
+                onClick={() => setIsEditing(true)}
+                disabled={cloneMutation.isPending}
+              >
+                Edit
+              </button>
+            </>
           )}
         </div>
       </header>
+
+      {isCloning ? (
+        <section className="mt-4 space-y-3 rounded border border-dashed border-white/10 bg-background/20 p-4">
+          <h4 className="text-xs uppercase tracking-wide text-foreground/60">Clone agent</h4>
+          <p className="text-xs text-foreground/60">Copy tools and routes from this agent into a new key.</p>
+          <label className="block text-xs font-medium text-foreground/70">
+            New key
+            <input
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              value={cloneKey}
+              onChange={(event) => setCloneKey(event.target.value)}
+              disabled={cloneMutation.isPending}
+              placeholder={`${agent.key}_copy`}
+            />
+          </label>
+          <label className="block text-xs font-medium text-foreground/70">
+            Display name (optional)
+            <input
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              value={cloneDisplayName}
+              onChange={(event) => setCloneDisplayName(event.target.value)}
+              disabled={cloneMutation.isPending}
+            />
+          </label>
+          <label className="block text-xs font-medium text-foreground/70">
+            Description (optional)
+            <textarea
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              rows={2}
+              value={cloneDescription}
+              onChange={(event) => setCloneDescription(event.target.value)}
+              disabled={cloneMutation.isPending}
+            />
+          </label>
+          <div className="flex flex-wrap gap-4 text-xs text-foreground/70">
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={cloneAllowRespond}
+                onChange={(event) => setCloneAllowRespond(event.target.checked)}
+                disabled={cloneMutation.isPending}
+              />
+              Allow RESPOND
+            </label>
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={cloneIsDefault}
+                onChange={(event) => setCloneIsDefault(event.target.checked)}
+                disabled={cloneMutation.isPending}
+              />
+              Default agent
+            </label>
+          </div>
+          <label className="block text-xs font-medium text-foreground/70">
+            Prompt template (optional)
+            <textarea
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              rows={4}
+              value={clonePromptTemplate}
+              onChange={(event) => setClonePromptTemplate(event.target.value)}
+              disabled={cloneMutation.isPending}
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="rounded border border-white/10 px-3 py-1 text-xs text-foreground/70 hover:border-white/30 disabled:opacity-60"
+              onClick={handleCloneSave}
+              disabled={cloneMutation.isPending}
+            >
+              {cloneMutation.isPending ? "Cloning…" : "Create clone"}
+            </button>
+            <button
+              type="button"
+              className="rounded border border-white/10 px-3 py-1 text-xs text-foreground/70 hover:border-white/30 disabled:opacity-60"
+              onClick={toggleClone}
+              disabled={cloneMutation.isPending}
+            >
+              Cancel
+            </button>
+          </div>
+          {cloneError ? <p className="text-xs text-danger">{cloneError}</p> : null}
+        </section>
+      ) : null}
 
       <section className="mt-4 space-y-4">
         {isEditing ? (
@@ -308,6 +510,7 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
       </section>
 
       {errorMessage ? <p className="mt-3 text-sm text-danger">{errorMessage}</p> : null}
+      {cloneToast ? <p className="mt-2 text-xs text-emerald-400">{cloneToast}</p> : null}
     </article>
   );
 }
@@ -322,6 +525,13 @@ export function ToolCard({ tool }: { tool: ToolSummary }) {
   const [paramsSchemaText, setParamsSchemaText] = useState(prettyJson(tool.params_schema));
   const [additionalDataText, setAdditionalDataText] = useState(prettyJson(tool.additional_data));
   const [editError, setEditError] = useState<string | null>(null);
+
+  const [isCloning, setIsCloning] = useState(false);
+  const [cloneKey, setCloneKey] = useState(`${tool.key}_copy`);
+  const [cloneDisplayName, setCloneDisplayName] = useState(tool.display_name ?? "");
+  const [cloneDescription, setCloneDescription] = useState(tool.description ?? "");
+  const [cloneError, setCloneError] = useState<string | null>(null);
+  const [cloneToast, setCloneToast] = useState<string | null>(null);
 
   const [testParamsText, setTestParamsText] = useState("{}");
   const [testSystemParamsText, setTestSystemParamsText] = useState("{}");
@@ -341,7 +551,13 @@ export function ToolCard({ tool }: { tool: ToolSummary }) {
     setTestAdditionalDataText("{}");
     setTestResult(null);
     setTestError(null);
-  }, [tool.additional_data, tool.description, tool.display_name, tool.id, tool.params_schema, tool.provider_type, tool.secret_ref]);
+    setCloneKey(`${tool.key}_copy`);
+    setCloneDisplayName(tool.display_name ?? "");
+    setCloneDescription(tool.description ?? "");
+    setCloneError(null);
+    setCloneToast(null);
+    setIsCloning(false);
+  }, [tool.additional_data, tool.description, tool.display_name, tool.id, tool.key, tool.params_schema, tool.provider_type, tool.secret_ref]);
 
   const mutation = useMutation({
     mutationFn: (payload: ToolUpdatePayload) => updateTool(tool.id, payload),
@@ -370,6 +586,26 @@ export function ToolCard({ tool }: { tool: ToolSummary }) {
     onError: (err) => {
       setTestResult(null);
       setTestError(extractApiErrorMessage(err));
+    }
+  });
+
+  const cloneMutation = useMutation({
+    mutationFn: (payload: { key: string; display_name?: string | null; description?: string | null }) =>
+      duplicateTool({
+        source: tool,
+        key: payload.key,
+        display_name: payload.display_name ?? undefined,
+        description: payload.description ?? undefined
+      }),
+    onSuccess: (data) => {
+      setCloneError(null);
+      setCloneToast(`Cloned tool to '${data.key}'`);
+      setIsCloning(false);
+      queryClient.invalidateQueries({ queryKey: ["tools"] });
+    },
+    onError: (err) => {
+      setCloneToast(null);
+      setCloneError(extractApiErrorMessage(err));
     }
   });
 
@@ -435,6 +671,42 @@ export function ToolCard({ tool }: { tool: ToolSummary }) {
     testMutation.mutate(payload);
   };
 
+  const toggleCloneTool = () => {
+    if (cloneMutation.isPending) {
+      return;
+    }
+    if (isCloning) {
+      setIsCloning(false);
+      setCloneError(null);
+      return;
+    }
+    setCloneError(null);
+    setCloneToast(null);
+    setCloneKey(`${tool.key}_copy`);
+    setCloneDisplayName(tool.display_name ?? "");
+    setCloneDescription(tool.description ?? "");
+    setIsCloning(true);
+  };
+
+  const handleCloneTool = () => {
+    setCloneError(null);
+    setCloneToast(null);
+    const trimmedKey = cloneKey.trim();
+    if (!trimmedKey) {
+      setCloneError("New tool key is required");
+      return;
+    }
+    if (trimmedKey.toLowerCase() === tool.key.toLowerCase()) {
+      setCloneError("Choose a different key for the clone");
+      return;
+    }
+    cloneMutation.mutate({
+      key: trimmedKey,
+      display_name: cloneDisplayName.trim() ? cloneDisplayName.trim() : null,
+      description: cloneDescription.trim() ? cloneDescription.trim() : null
+    });
+  };
+
   return (
     <article className="rounded border border-white/10 bg-background/30 p-4">
       <header className="flex items-start justify-between gap-4">
@@ -466,16 +738,82 @@ export function ToolCard({ tool }: { tool: ToolSummary }) {
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              className="rounded border border-white/10 px-3 py-1 text-sm text-foreground/70 hover:border-white/30"
-              onClick={() => setIsEditing(true)}
-            >
-              Edit
-            </button>
+            <>
+              <button
+                type="button"
+                className="rounded border border-white/10 px-3 py-1 text-sm text-foreground/70 hover:border-white/30 disabled:opacity-60"
+                onClick={toggleCloneTool}
+                disabled={cloneMutation.isPending}
+              >
+                {cloneMutation.isPending ? "Cloning…" : isCloning ? "Close clone" : "Clone"}
+              </button>
+              <button
+                type="button"
+                className="rounded border border-white/10 px-3 py-1 text-sm text-foreground/70 hover:border-white/30"
+                onClick={() => setIsEditing(true)}
+                disabled={cloneMutation.isPending}
+              >
+                Edit
+              </button>
+            </>
           )}
         </div>
       </header>
+
+      {isCloning ? (
+        <section className="mt-4 space-y-3 rounded border border-dashed border-white/10 bg-background/20 p-4">
+          <h4 className="text-xs uppercase tracking-wide text-foreground/60">Clone tool</h4>
+          <p className="text-xs text-foreground/60">Copies params and additional data from this tool. Provide a new key.</p>
+          <label className="block text-xs font-medium text-foreground/70">
+            New key
+            <input
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              value={cloneKey}
+              onChange={(event) => setCloneKey(event.target.value)}
+              disabled={cloneMutation.isPending}
+              placeholder={`${tool.key}_copy`}
+            />
+          </label>
+          <label className="block text-xs font-medium text-foreground/70">
+            Display name (optional)
+            <input
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              value={cloneDisplayName}
+              onChange={(event) => setCloneDisplayName(event.target.value)}
+              disabled={cloneMutation.isPending}
+            />
+          </label>
+          <label className="block text-xs font-medium text-foreground/70">
+            Description (optional)
+            <textarea
+              className="mt-1 w-full rounded border border-white/10 bg-background/40 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              rows={2}
+              value={cloneDescription}
+              onChange={(event) => setCloneDescription(event.target.value)}
+              disabled={cloneMutation.isPending}
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="rounded border border-white/10 px-3 py-1 text-xs text-foreground/70 hover:border-white/30 disabled:opacity-60"
+              onClick={handleCloneTool}
+              disabled={cloneMutation.isPending}
+            >
+              {cloneMutation.isPending ? "Cloning…" : "Create clone"}
+            </button>
+            <button
+              type="button"
+              className="rounded border border-white/10 px-3 py-1 text-xs text-foreground/70 hover:border-white/30 disabled:opacity-60"
+              onClick={toggleCloneTool}
+              disabled={cloneMutation.isPending}
+            >
+              Cancel
+            </button>
+          </div>
+          {cloneError ? <p className="text-xs text-danger">{cloneError}</p> : null}
+        </section>
+      ) : null}
 
       <section className="mt-4 space-y-4">
         {isEditing ? (
@@ -618,7 +956,7 @@ export function ToolCard({ tool }: { tool: ToolSummary }) {
       </section>
 
       {editError ? <p className="mt-3 text-sm text-danger">{editError}</p> : null}
+      {cloneToast ? <p className="mt-2 text-xs text-emerald-400">{cloneToast}</p> : null}
     </article>
   );
 }
-

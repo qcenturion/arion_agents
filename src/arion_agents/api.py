@@ -25,6 +25,7 @@ from arion_agents.prompts.context_builder import (
     build_tool_definitions,
     build_route_definitions,
 )
+from arion_agents.logs.execution_log_policy import ExecutionLogPolicy
 
 from arion_agents.runtime_models import CompiledGraph
 from arion_agents.system_params import merge_with_defaults
@@ -272,7 +273,7 @@ class RunOnceRequest(BaseModel):
 
 
 class ExperimentItem(BaseModel):
-    user_message: str
+    run_input: str
     correct_answer: str | None = None
     iterations: int = Field(default=1, ge=1)
     system_params: dict = Field(default_factory=dict)
@@ -512,6 +513,43 @@ async def _drain_experiment_queue() -> None:
         _queue_worker_task = None
 
 
+def _find_first_string(source: Any, key: str) -> str | None:
+    if source is None:
+        return None
+
+    stack: list[Any] = [source]
+    visited: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if key in current:
+                value = current[key]
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if stripped:
+                        return stripped
+                elif value is not None:
+                    text = str(value).strip()
+                    if text:
+                        return text
+            for child in current.values():
+                if isinstance(child, (dict, list, tuple, set)):
+                    child_id = id(child)
+                    if child_id not in visited:
+                        visited.add(child_id)
+                        stack.append(child)
+        elif isinstance(current, (list, tuple, set)):
+            for child in current:
+                if isinstance(child, (dict, list, tuple, set)):
+                    child_id = id(child)
+                    if child_id not in visited:
+                        visited.add(child_id)
+                        stack.append(child)
+
+    return None
+
+
 async def _process_queue_record(record_id: int) -> None:
     logger = logging.getLogger(__name__)
     with get_session() as db:
@@ -539,6 +577,16 @@ async def _process_queue_record(record_id: int) -> None:
         )
         trace_id = result.get("trace_id") if isinstance(result, dict) else None
         result_summary.update({"trace_id": trace_id, "status": final_status})
+        if isinstance(final_section, dict):
+            result_summary.update(final_section)
+
+        verdict_value = _find_first_string(result, "verdict") if isinstance(result, (dict, list, tuple, set)) else None
+        if verdict_value:
+            result_summary["verdict"] = verdict_value
+
+        answer_value = _find_first_string(result, "answer") if isinstance(result, (dict, list, tuple, set)) else None
+        if answer_value:
+            result_summary["answer"] = answer_value
         success = final_status in {None, "ok"}
         if not success:
             error_text = f"final status {final_status!r}"
@@ -571,7 +619,9 @@ async def _process_queue_record(record_id: int) -> None:
 
 _CSV_REQUIRED_COLUMNS = ["iterations"]
 _CSV_OPTIONAL_COLUMNS = [
-    "user_message",
+    "objective",
+    "correct_behavior",
+    "input_alias",
     "issue_description",
     "true_solution_description",
     "stopping_conditions",
@@ -699,7 +749,10 @@ def _row_to_experiment_item(
     system_params: dict[str, Any] = {}
     warnings: list[str] = []
     iterations = 1
-    user_message: str | None = None
+    run_input: str | None = None
+    objective: str | None = None
+    correct_behavior: str | None = None
+    input_alias: str | None = None
     correct_answer: str | None = None
     label: str | None = None
 
@@ -716,8 +769,21 @@ def _row_to_experiment_item(
             iterations, warn = _coerce_iterations(value)
             if warn:
                 warnings.append(warn)
+        elif lowered == "run_input":
+            run_input = str(value) if value is not None else None
         elif lowered == "user_message":
-            user_message = str(value) if value is not None else None
+            fallback = str(value) if value is not None else None
+            if fallback and not run_input:
+                run_input = fallback
+                warnings.append("user_message column detected; using value for run_input")
+            elif fallback:
+                warnings.append("user_message column ignored because run_input is already provided")
+        elif lowered == "objective":
+            objective = str(value).strip() if isinstance(value, str) else str(value) if value is not None else None
+        elif lowered == "correct_behavior":
+            correct_behavior = str(value).strip() if isinstance(value, str) else str(value) if value is not None else None
+        elif lowered in {"input_alias", "alias"}:
+            input_alias = str(value).strip() if isinstance(value, str) else str(value) if value is not None else None
         elif lowered == "correct_answer":
             correct_answer = (
                 str(value) if value not in (None, "") else None
@@ -746,15 +812,27 @@ def _row_to_experiment_item(
             if value not in (None, ""):
                 metadata[key] = value
 
-    if user_message is None or not str(user_message).strip():
-        user_message = "start conversation"
-        warnings.append(
-            "user_message missing; defaulted to 'start conversation'"
-        )
+    if run_input is None or not str(run_input).strip():
+        parts: list[str] = []
+        if objective and objective.strip():
+            parts.append(f"Objective: {objective.strip()}")
+        if correct_behavior and correct_behavior.strip():
+            parts.append(f"Correct Behavior: {correct_behavior.strip()}")
+        if parts:
+            run_input = "\n\n".join(parts)
+        else:
+            return None, warnings, "run_input is required"
+
+    if input_alias:
+        metadata.setdefault("input_alias", input_alias)
+    if objective and objective.strip():
+        metadata.setdefault("objective", objective.strip())
+    if correct_behavior and correct_behavior.strip():
+        metadata.setdefault("correct_behavior", correct_behavior.strip())
 
     try:
         item = ExperimentItem(
-            user_message=str(user_message),
+            run_input=str(run_input),
             correct_answer=correct_answer,
             iterations=iterations,
             system_params=system_params,
@@ -900,7 +978,7 @@ async def run_batch(payload: RunBatchRequest) -> dict:
             request = RunOnceRequest(
                 network=payload.network,
                 agent_key=payload.agent_key,
-                user_message=item.user_message,
+                user_message=item.run_input,
                 version=payload.version,
                 system_params=combined_system_params,
                 model=payload.model,
@@ -914,7 +992,7 @@ async def run_batch(payload: RunBatchRequest) -> dict:
                     "metadata": item.metadata,
                     "label": item.label,
                     "iterations": item.iterations,
-                    "user_message": item.user_message,
+                    "run_input": item.run_input,
                 },
                 max_steps=payload.max_steps,
             )
@@ -1024,6 +1102,27 @@ async def get_experiment_detail(experiment_id: str) -> dict:
                 if isinstance(item.status, ExperimentQueueStatus)
                 else str(item.status)
             )
+
+            result_payload = item.result
+            verdict_value: str | None = None
+            answer_value: str | None = None
+            if isinstance(result_payload, dict):
+                raw_verdict = result_payload.get("verdict")
+                if isinstance(raw_verdict, str):
+                    verdict_value = raw_verdict.strip() or None
+                elif raw_verdict is not None:
+                    verdict_value = str(raw_verdict).strip() or None
+                if verdict_value is None:
+                    verdict_value = _find_first_string(result_payload, "verdict")
+
+                raw_answer = result_payload.get("answer")
+                if isinstance(raw_answer, str):
+                    answer_value = raw_answer.strip() or None
+                elif raw_answer is not None:
+                    answer_value = str(raw_answer).strip() or None
+                if answer_value is None:
+                    answer_value = _find_first_string(result_payload, "answer")
+
             items_payload.append(
                 {
                     "id": item.id,
@@ -1034,7 +1133,9 @@ async def get_experiment_detail(experiment_id: str) -> dict:
                     "started_at": item.started_at,
                     "completed_at": item.completed_at,
                     "error": item.error,
-                    "result": item.result,
+                    "result": result_payload,
+                    "verdict": verdict_value,
+                    "answer": answer_value,
                 }
             )
 
@@ -1059,6 +1160,110 @@ async def get_experiment_detail(experiment_id: str) -> dict:
         }
 
     return response
+
+
+@app.get("/experiments/{experiment_id}/runs")
+async def get_experiment_runs(experiment_id: str) -> dict:
+    fields = [
+        {"key": "item_index", "label": "Row", "default": True},
+        {"key": "iteration", "label": "Iteration", "default": True},
+        {"key": "status", "label": "Status", "default": True},
+        {"key": "verdict", "label": "Verdict", "default": True},
+        {"key": "answer", "label": "Answer", "default": True},
+        {"key": "trace_id", "label": "Trace", "default": True},
+        {"key": "error", "label": "Error", "default": True},
+        {"key": "run_id", "label": "Run ID", "default": False},
+        {"key": "created_at", "label": "Created", "default": False},
+        {"key": "updated_at", "label": "Updated", "default": False},
+        {"key": "duration_ms", "label": "Duration (ms)", "default": False},
+        {"key": "model", "label": "Model", "default": False},
+        {"key": "experiment_item_payload", "label": "Item Payload", "default": False},
+        {"key": "request_payload", "label": "Request Payload", "default": False},
+        {"key": "response_payload", "label": "Response Payload", "default": False},
+    ]
+
+    runs_payload: list[dict[str, Any]] = []
+
+    with get_session() as db:
+        stmt = (
+            sa.select(RunRecord)
+            .where(RunRecord.experiment_id == experiment_id)
+            .order_by(RunRecord.created_at.desc())
+        )
+        runs = db.exec(stmt).scalars().all()
+
+        for run in runs:
+            request_payload = run.request_payload or {}
+            response_payload = run.response_payload or {}
+
+            verdict_value = _find_first_string(response_payload, "verdict")
+            answer_value = _find_first_string(response_payload, "answer")
+
+            trace_id: str | None = None
+            if isinstance(response_payload, dict):
+                raw_trace = response_payload.get("trace_id")
+                if isinstance(raw_trace, str) and raw_trace.strip():
+                    trace_id = raw_trace.strip()
+            if not trace_id and isinstance(request_payload, dict):
+                raw_trace = request_payload.get("trace_id")
+                if isinstance(raw_trace, str) and raw_trace.strip():
+                    trace_id = raw_trace.strip()
+            if not trace_id:
+                trace_id = run.run_id
+
+            error_value = None
+            if isinstance(response_payload, dict):
+                raw_error = response_payload.get("error")
+                if isinstance(raw_error, str) and raw_error.strip():
+                    error_value = raw_error.strip()
+                elif raw_error is not None:
+                    extracted = _find_first_string(raw_error, "message")
+                    if extracted:
+                        error_value = extracted
+                if not error_value:
+                    error_value = _find_first_string(response_payload, "error")
+
+            duration_ms = None
+            if isinstance(response_payload, dict):
+                raw_duration = response_payload.get("run_duration_ms")
+                if isinstance(raw_duration, (int, float)):
+                    duration_ms = raw_duration
+
+            model_name = None
+            if isinstance(response_payload, dict):
+                model_candidate = response_payload.get("model")
+                if isinstance(model_candidate, str) and model_candidate.strip():
+                    model_name = model_candidate.strip()
+            if not model_name and isinstance(request_payload, dict):
+                model_candidate = request_payload.get("model")
+                if isinstance(model_candidate, str) and model_candidate.strip():
+                    model_name = model_candidate.strip()
+
+            runs_payload.append(
+                {
+                    "run_id": run.run_id,
+                    "item_index": run.experiment_item_index,
+                    "iteration": run.experiment_iteration,
+                    "status": run.status,
+                    "verdict": verdict_value,
+                    "answer": answer_value,
+                    "trace_id": trace_id,
+                    "error": error_value,
+                    "created_at": run.created_at,
+                    "updated_at": run.updated_at,
+                    "duration_ms": duration_ms,
+                    "model": model_name,
+                    "experiment_item_payload": run.experiment_item_payload,
+                    "request_payload": request_payload,
+                    "response_payload": response_payload,
+                }
+            )
+
+    return {
+        "experiment_id": experiment_id,
+        "runs": runs_payload,
+        "fields": fields,
+    }
 
 
 def _load_graph_from_db(network: str, version: int | None) -> GraphBundle:
@@ -1189,6 +1394,16 @@ def _build_run_config_from_graph(
         respond_payload_guidance = respond_cfg.get("payload_guidance")
         respond_payload_example = respond_cfg.get("payload_example")
 
+    execution_log_policy = None
+    exec_log_cfg = graph.get("execution_log") if isinstance(graph, dict) else None
+    if exec_log_cfg:
+        try:
+            execution_log_policy = ExecutionLogPolicy.model_validate(exec_log_cfg)
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid execution_log config: {exc}"
+            ) from exc
+
     return RunConfig(
         current_agent=agent["key"],
         equipped_tools=equipped,
@@ -1204,6 +1419,7 @@ def _build_run_config_from_graph(
         respond_payload_guidance=respond_payload_guidance,
         respond_payload_example=respond_payload_example,
         display_name=display_name,
+        execution_log_policy=execution_log_policy,
     )
 
 

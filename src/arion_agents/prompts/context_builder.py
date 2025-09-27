@@ -35,9 +35,7 @@ def build_constraints(
 
     # Action sections in consistent order
     if has_tools:
-        lines.append(
-            "\n=== USE_TOOL action ===\nYou MUST follow this schema:"
-        )
+        lines.append("\n=== USE_TOOL action ===\nYou MUST follow this schema:")
         lines.append("```json")
         lines.append(
             json.dumps(
@@ -101,9 +99,7 @@ def build_constraints(
             lines.append(tool_defs)
 
     if has_routes:
-        lines.append(
-            "\n=== ROUTE_TO_AGENT action ===\nYou MUST follow this schema:"
-        )
+        lines.append("\n=== ROUTE_TO_AGENT action ===\nYou MUST follow this schema:")
         lines.append("```json")
         sample_route = cfg.allowed_routes[0] if cfg.allowed_routes else "<agent>"
         lines.append(
@@ -128,12 +124,12 @@ def build_constraints(
             lines.append(
                 "You are not allowed to RESPOND directly; hand off with ROUTE_TO_AGENT when you have sufficient evidence."
             )
-        lines.append("Always return JSON matching one of the allowed envelopes; never emit free-form text.")
+        lines.append(
+            "Always return JSON matching one of the allowed envelopes; never emit free-form text."
+        )
 
     if can_respond:
-        lines.append(
-            "\n=== RESPOND action ===\nYou MUST follow this schema:"
-        )
+        lines.append("\n=== RESPOND action ===\nYou MUST follow this schema:")
         lines.append("```json")
         lines.append(
             json.dumps(
@@ -156,7 +152,9 @@ def build_constraints(
                 lines.append(json.dumps(payload_schema))
                 lines.append("```")
             except Exception:
-                lines.append("RESPOND payload schema provided but could not be serialized for display.")
+                lines.append(
+                    "RESPOND payload schema provided but could not be serialized for display."
+                )
         payload_example = getattr(cfg, "respond_payload_example", None)
         if payload_example:
             try:
@@ -165,7 +163,9 @@ def build_constraints(
                 lines.append(json.dumps(payload_example))
                 lines.append("```")
             except Exception:
-                lines.append("RESPOND payload example provided but could not be serialized for display.")
+                lines.append(
+                    "RESPOND payload example provided but could not be serialized for display."
+                )
 
     if can_task_group:
         lines.append(
@@ -342,7 +342,9 @@ def build_context(
     handoff_context: Dict[str, Any] | None = None,
 ) -> str:
     parts: List[str] = []
-    parts.append(f"User message:\n{user_message}")
+    parts.append("=== RUN INPUT ===")
+    parts.append(user_message)
+    parts.append("=== END RUN INPUT ===")
     if handoff_context:
         parts.append("Context handed off from previous agent:")
         try:
@@ -354,6 +356,7 @@ def build_context(
         for item in reversed(full_tool_outputs):
             tool_key = item.get("tool_key") or "<unknown>"
             result = item.get("result") or {}
+            display_result = item.get("response_excerpt") or result
             if tool_key == "dialogflow_cx_tester":
                 summary = result.get("summary") or {}
                 if isinstance(summary, dict):
@@ -369,28 +372,37 @@ def build_context(
                     formatted = summary
                 parts.append(f"- {tool_key}: {formatted}")
             else:
-                parts.append(f"- {tool_key}: {result}")
+                parts.append(f"- {tool_key}: {display_result}")
     if exec_log:
-        parts.append("Execution log summary:")
+        parts.append(
+            "The following section outlines the Execution Log, a summarized audit trail of the Agent and Tool calls executed so far in this run."
+        )
+        parts.append("===== EXECUTION LOG START =====")
         for e in exec_log[-10:]:  # last 10
             if e.get("type") == "agent":
                 parts.append(
-                    f"  step {e['step']}: agent {e['agent_key']} → {e['decision']['action']}"
+                    f"step {e['step']}: agent {e['agent_key']} → {e['decision']['action']}"
                 )
             elif e.get("type") == "tool":
-                parts.append(
-                    f"  step {e['step']}: tool {e['tool_key']} status={e['status']}"
-                )
+                line = f"step {e['step']}: tool {e['tool_key']} status={e['status']}"
+                request_preview = e.get("request_preview")
+                if request_preview:
+                    line += f" | request: {request_preview}"
+                response_preview = e.get("response_preview")
+                if response_preview:
+                    line += f" | response: {response_preview}"
+                parts.append(line)
             elif e.get("type") == "task_group":
                 group_id = e.get("group_id")
                 group_status = e.get("status")
                 parts.append(
-                    f"  step {e['step']}: task_group {group_id} status={group_status}"
+                    f"step {e['step']}: task_group {group_id} status={group_status}"
                 )
                 for child in e.get("tasks", [])[:3]:  # summarize first few tasks
                     parts.append(
-                        f"    - task {child.get('task_id')}: {child.get('task_type')} status={child.get('status')}"
+                        f"  - task {child.get('task_id')}: {child.get('task_type')} status={child.get('status')}"
                     )
+        parts.append("===== EXECUTION LOG END =====")
     return "\n".join(parts)
 
 

@@ -118,6 +118,8 @@ class ExecutionLog:
         group_id: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         attempt: Optional[int] = None,
+        request_excerpt: Optional[Dict[str, Any]] = None,
+        response_excerpt: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload: Dict[str, Any] = {
             "type": "tool",
@@ -126,8 +128,8 @@ class ExecutionLog:
             "agent_key": agent_key,
             "tool_key": tool_key,
             "execution_id": execution_id,
-            "request_preview": _truncate(request_preview, 50),
-            "response_preview": _truncate(response_preview, 100),
+            "request_preview": request_preview,
+            "response_preview": response_preview,
             "status": status,
             "duration_ms": duration_ms,
         }
@@ -137,6 +139,10 @@ class ExecutionLog:
             payload["request_payload"] = request_payload
         if response_payload is not None:
             payload["response_payload"] = response_payload
+        if request_excerpt is not None:
+            payload["request_excerpt"] = request_excerpt
+        if response_excerpt is not None:
+            payload["response_excerpt"] = response_excerpt
         if group_id is not None:
             payload["group_id"] = group_id
         if parent_task_id is not None:
@@ -188,6 +194,14 @@ class ExecutionLog:
         }
         self.entries.append(payload)
 
+    def append_system_message(self, message: str) -> None:
+        payload: Dict[str, Any] = {
+            "type": "system",
+            "message": message,
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        self.entries.append(payload)
+
     def current_epoch_for(self, agent_key: str) -> int:
         return self.epoch_by_agent.get(agent_key, self.current_epoch)
 
@@ -213,6 +227,10 @@ class ToolExecutionLog:
         group_id: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         attempt: Optional[int] = None,
+        request_excerpt: Optional[Dict[str, Any]] = None,
+        response_excerpt: Optional[Dict[str, Any]] = None,
+        request_preview_text: Optional[str] = None,
+        response_preview_text: Optional[str] = None,
     ) -> str:
         exec_id = uuid.uuid4().hex
         timestamp_ms = (
@@ -231,6 +249,10 @@ class ToolExecutionLog:
             "group_id": group_id,
             "parent_task_id": parent_task_id,
             "attempt": attempt,
+            "request_excerpt": request_excerpt,
+            "response_excerpt": response_excerpt,
+            "request_preview_text": request_preview_text,
+            "response_preview_text": response_preview_text,
         }
         return exec_id
 

@@ -1,74 +1,78 @@
 # Config Page & Network Detail View Overhaul
 
-**Status:** Proposed
+**Status:** In progress
 **Date:** 2025-09-25
-**Author:** Gemini
+**Owner:** Gemini
+**Last Updated:** 2025-09-27 (Codex planning pass)
 
-## 1. Overview
+## 1. Updated Scope
+- Provide first-class UI flows to create networks, agents, and tools without relying on seed scripts.
+- Add clone/duplicate actions for networks, network-scoped agents, and global tools.
+- Allow renaming of networks plus display names for agents and tools from the same surface.
+- Stage the deeper network detail view/graph work behind the CRUD improvements so we can ship incremental value.
 
-This document outlines a major feature enhancement for the Configuration section of the application. The goal is to improve workflow efficiency by adding "copy" functionality for networks and agents, and to create a more intuitive and powerful interface for managing the components of a network.
-
-## 2. Feature Breakdown
-
-### Feature 2.1: Copy Network & Agent
-
-- **User Story:** As a developer, I want to duplicate an existing network or agent so I can create a new version or test a variation without starting from scratch.
-- **Requirements:**
-    1.  Add a "Copy" button next to each network in the list on the main Config page.
-    2.  Add a "Copy" button next to the "Publish Network" button on the (new) network detail view.
-    3.  Add a "Copy" button next to each agent listed within the (new) network detail view.
-    4.  The copy operation must be a deep copy, duplicating all child objects (agents, tools, routes, etc.) and linking them to the new parent.
-
-### Feature 2.2: Unified Network Detail View
-
-- **User Story:** As a developer, I want a single page where I can see and manage all the components of a specific network.
-- **Requirements:**
-    1.  Clicking a network on the Config page should navigate to a new, dedicated network detail page.
-    2.  This page must display a list of all agents and tools belonging to the network.
-    3.  The agents and tools listed must be editable in place, using the same forms/modals available on the main "Agents" and "Tools" tabs.
-
-### Feature 2.3: Visual Graph in Network View
-
-- **User Story:** As a developer, I want to see a visual representation of my network's structure on its detail page so I can quickly understand its flow.
-- **Requirements:**
-    1.  The network detail page must include a visual graph.
-    2.  The graph should render agents as nodes.
-    3.  It should render the `allowed_routes` between agents as directed edges (arrows).
-    4.  It should visually indicate which tools are equipped by each agent (e.g., by listing them in the node or with icons).
+## 2. Current State
+- `frontend/components/Config/ConfigWorkbench.tsx` renders the tabbed configuration surface backed by React Query.
+- Network rows expose publish + RESPOND controls but lack create, rename, or copy affordances.
+- Agents and tools tabs show editable cards yet have no entry points for creating or duplicating resources.
+- `frontend/lib/api/config.ts` only exposes read/patch helpers; create + association endpoints are not wrapped for frontend use.
+- We still rely on scripts like `tools/seed_dialogflow_demo.py` for initial provisioning.
 
 ## 3. Implementation Plan
 
-### Phase 1: Backend API (Copy Functionality)
+### 3.1 Shared API + State Layer
+- Extend `frontend/lib/api/config.ts` with helpers: `createNetwork`, `createAgent`, `createTool`, `addNetworkTools`, `setAgentTools`, `setAgentRoutes`, and orchestrators for duplication flows.
+- Define small payload helpers for clone forms (target name/key, optional overrides) so UI validation and API calls share logic.
+- Centralize toast/error handling inside `ConfigWorkbench` state so every mutation can surface success/failure consistently.
+- Reuse the existing JSON helpers (`prettyJson`, `parseJsonObject*`) across new forms to avoid duplicating validation code.
 
-- **File to Modify:** `src/arion_agents/api_config.py`
-- **Plan:**
-    1.  **Create `POST /networks/{network_id}/copy` Endpoint:**
-        - This endpoint will fetch the target `Network` and all its related objects (Agents, NetworkTools, routes, etc.).
-        - It will create new database records for each of these, ensuring all foreign keys are correctly updated to point to the new parent network.
-        - The new network will have a name like "Copy of [Original Name]".
-    2.  **Create `POST /networks/{network_id}/agents/{agent_id}/copy` Endpoint:**
-        - This endpoint will perform a similar deep copy operation for a single `Agent` within its parent network.
-        - The new agent will have a key like "[original_key]_copy".
+### 3.2 Networks Tab (`ConfigWorkbench`)
+- Add a collapsible "Create network" card above the list with fields for `name`, optional `description`, RESPOND payload schema JSON, and general `additional_data`; submit via `createNetwork` and refresh `"networks"`.
+- Extend edit mode in `NetworkRow` to include a `name` input, enforce case-insensitive uniqueness client-side, and call `updateNetwork` with the new name plus existing payload.
+- Reuse the existing toast/error region within the card so create/rename feedback stays visible without extra components.
+- Introduce a "Clone" action per row that opens a minimal form (new name + optional suffix toggle) and invokes the duplication helper to copy metadata, attach tools, recreate agents, and reapply routes.
+- After cloning invalidate `"networks"`, `"agents"`, and `"tools"` queries to keep all tabs in sync with the new records.
 
-### Phase 2: Frontend UI (New Network Detail Page)
+- Prepend a "Create agent" card with inputs: target network (select), agent `key`, optional display name/description, flags for `allow_respond`/`is_default`, and prompt template; submit via `createAgent`.
+- Refresh agent and network queries after creation and surface any API validation errors inline.
+- Add a "Clone" button on each `AgentCard` that prompts for a new key/display name, then recreates the agent, reapplies equipped tools via `setAgentTools`, and mirrors outbound routes via `setAgentRoutes`.
+- Default cloned agents to `is_default = false` while letting users opt in to transferring default status to prevent accidental constraint violations (the publish constraint remains enforced server-side).
+- Clarify copy in edit mode that display name is the user-facing rename handle while keys remain immutable today.
 
-- **Plan:**
-    1.  **Create New Page:** Create a new file at `frontend/app/config/networks/[networkId]/page.tsx`. This will be a client component that fetches data for a specific network.
-    2.  **Unified Dashboard Layout:**
-        - The page will fetch and display the network's details at the top.
-        - It will have two main sections: "Agents" and "Tools".
-        - Each section will list the items belonging to the network and provide "Edit" and "Copy" buttons for each. The edit functionality can reuse existing components.
-    3.  **Visual Graph Component:**
-        - Create a new component, e.g., `NetworkVisualizer.tsx`.
-        - This component will fetch data from the existing `GET /networks/{network_id}/graph` endpoint.
-        - It will use a library like `sigma.js` (already in use) or a simpler SVG-based renderer to draw the nodes (agents) and edges (routes). Tool equipage will be displayed as text within each node.
+### 3.4 Tools Tab (`ToolCard`, `ToolsPanel`)
+- Add a creation card collecting tool `key`, display name, optional description/provider/secret, and JSON editors for `params_schema` + `additional_data`; validate that `additional_data.agent_params_json_schema` is an object before POSTing.
+- Invalidate the tools query and reset the form after successful creation while keeping validation errors inline when they occur.
+- Provide a "Clone" action on `ToolCard` that hydrates the create card with existing values, requires a new key, and submits a duplicate via `createTool`.
+- Update edit-mode labels to emphasize that display name changes serve as the rename affordance; keys stay fixed until backend support exists (rename == display name update for this iteration).
+- Add a quick "Copy key" utility button on the tool card header to streamline attaching the tool to networks.
 
-### Phase 3: Frontend UI (Adding Copy Buttons)
+### 3.5 Clone Execution Flow
+- Wrap duplication logic in helpers (`duplicateNetwork`, `duplicateAgent`, `duplicateTool`) within `frontend/lib/api/config.ts` returning the created summary objects.
+- Network duplication steps: fetch `GET /config/networks/{id}/graph`, POST the new network (copy name/description/additional_data plus RESPOND schema), add network tools by key, recreate agents with identical keys/settings, call `setAgentTools` for each, reapply adjacency via `setAgentRoutes` once all agents exist, and copy the latest published network version metadata so the duplicate starts with the current compiled snapshot lineage (leave status `draft`).
+- Agent duplication steps: POST a new agent with copied metadata, reattach equipped tools, then mirror outbound routes using the same key list; surface a warning if the original agent was default and the clone opted into default.
+- Tool duplication: reuse the creation payload, force unique key suffixing (`_copy`, `_copy_2`, …) when the requested key collides, and return the new tool summary for display.
+- All orchestrators should report which step failed so the UI can present actionable errors (e.g., tool attach vs route update).
 
-- **Plan:**
-    1.  **Main Config Page:**
-        - **File:** `frontend/components/Config/ConfigWorkbench.tsx`
-        - **Action:** In the `NetworkRow` component, add a new "Copy" button. This button will trigger a `useMutation` hook that calls the new `POST /networks/{network_id}/copy` endpoint. On success, it will invalidate the `networks` query to refresh the list.
-    2.  **Network Detail Page:**
-        - **File:** `frontend/app/config/networks/[networkId]/page.tsx`
-        - **Action:** Add the top-level "Copy Network" button near the "Publish" button. Add "Copy" buttons to each agent in the list, wired up to their respective API endpoints.
+## 4. API Contracts
+- `POST /config/networks` creates a network (fields: `name`, optional `description`, `additional_data`); `PATCH /config/networks/{id}` renames with server-side uniqueness enforcement.
+- `POST /config/networks/{id}/agents` creates an agent; `PUT /config/networks/{id}/agents/{agent_id}/tools` and `/routes` endpoints manage equipped tools and adjacency.
+- `POST /config/tools` provisions a global tool; `PATCH /config/tools/{tool_id}` updates display metadata and schemas while keys remain immutable.
+- `POST /config/networks/{id}/tools` attaches global tools by key; `PATCH /config/networks/{id}/tools/{key}` keeps per-network schema overrides aligned.
+- `GET /config/networks/{id}/graph` supplies the data needed to seed duplication flows (agents, tools, adjacency, network metadata).
+
+## 5. Validation & UX Notes
+- Enforce required fields (`name`, `key`) and basic formatting before firing mutations to reduce 4xx responses.
+- Apply shared JSON parsing helpers so malformed schemas surface immediately with descriptive messages.
+- Disable action buttons while mutations run to avoid duplicate submissions, especially for multi-step clones.
+- Show success toasts that mention the resource key/name and offer quick navigation (e.g., scroll to the new network row).
+- Keep forms open on failure and display `extractApiErrorMessage` output so users see backend validation messages.
+
+## 6. Testing Plan
+- Unit-test the new API helpers with mocked `apiFetch` to confirm payload shapes for create and clone operations.
+- (Optional) Add a Playwright smoke covering the happy path for creating a tool, network, and agent via the UI.
+- Manually verify network clone preserves tool equipage and agent routes using the DialogFlow demo network as a fixture.
+- Run `make lint` and `npm run lint` inside `frontend` before submitting the feature branch.
+- Capture before/after screenshots for the issue to document the new create/clone affordances.
+
+## 7. Open Questions
+- Is it acceptable to defer the dedicated network detail page/graph visualization until after CRUD surfaces ship? (currently agreed: yes, defer)

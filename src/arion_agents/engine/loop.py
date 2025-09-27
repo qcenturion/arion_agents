@@ -7,6 +7,10 @@ import uuid
 
 from arion_agents.agent_decision import AgentDecision, decision_to_instruction
 from arion_agents.logs.execution_log import ExecutionLog, ToolExecutionLog
+from arion_agents.logs.execution_log_policy import (
+    ExecutionLogPolicy,
+    build_execution_log_previews,
+)
 from arion_agents.prompts.context_builder import (
     build_constraints,
     build_context,
@@ -80,7 +84,9 @@ def run_loop(
         except (TypeError, ValueError):
             return 0
 
-    def _append_step_event(entry_type: str, payload: Dict[str, Any], timestamp_ms: int) -> None:
+    def _append_step_event(
+        entry_type: str, payload: Dict[str, Any], timestamp_ms: int
+    ) -> None:
         nonlocal next_seq
         step_events.append(
             {
@@ -107,6 +113,7 @@ def run_loop(
         group_id: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         attempt_index: Optional[int] = None,
+        execution_log_policy: Optional[ExecutionLogPolicy] = None,
     ) -> Dict[str, Any]:
         r = result.response or {}
         attempted_tool = getattr(tool_action, "tool_name", None)
@@ -125,6 +132,16 @@ def run_loop(
             if total_for_completion
             else tool_started_at_ms
         )
+
+        request_preview, request_excerpt, response_preview, response_excerpt = (
+            build_execution_log_previews(
+                policy=execution_log_policy,
+                tool_key=tool_key or "",
+                request_payload=params_for_log or {},
+                response_payload=full_result if full_result is not None else {},
+            )
+        )
+
         execution_id = tool_log.put(
             agent_key=agent_key,
             tool_key=tool_key or "",
@@ -137,14 +154,18 @@ def run_loop(
             group_id=group_id,
             parent_task_id=parent_task_id,
             attempt=attempt_index,
+            request_excerpt=request_excerpt,
+            response_excerpt=response_excerpt,
+            request_preview_text=request_preview,
+            response_preview_text=response_preview,
         )
         exec_log.append_tool_step(
             step=step_idx,
             agent_key=agent_key,
             tool_key=tool_key or "",
             execution_id=execution_id,
-            request_preview=str(params_for_log or {}),
-            response_preview=str(full_result),
+            request_preview=request_preview,
+            response_preview=response_preview,
             status=result.status,
             duration_ms=duration_ms,
             agent_display_name=agent_display_name,
@@ -156,6 +177,8 @@ def run_loop(
             group_id=group_id,
             parent_task_id=parent_task_id,
             attempt=attempt_index,
+            request_excerpt=request_excerpt,
+            response_excerpt=response_excerpt,
         )
         tool_entry = exec_log.entries[-1]
         _append_step_event("tool", tool_entry, tool_started_at_ms)
@@ -218,13 +241,15 @@ def run_loop(
             )
             final_payload = (sub_run or {}).get("final") or {}
             final_status = final_payload.get("status")
-            final_action_type = (
-                final_payload.get("action_type")
-                or (final_payload.get("response") or {}).get("action_type")
-            )
+            final_action_type = final_payload.get("action_type") or (
+                final_payload.get("response") or {}
+            ).get("action_type")
             if final_status != "ok" or final_action_type != "TASK_RESPOND":
                 status = "error"
-                error_message = final_payload.get("error") or "Delegated agent did not complete successfully"
+                error_message = (
+                    final_payload.get("error")
+                    or "Delegated agent did not complete successfully"
+                )
         except Exception as exc:  # pragma: no cover - defensive
             status = "error"
             error_message = str(exc)
@@ -255,7 +280,9 @@ def run_loop(
         result_payload = None
         if sub_run and status == "ok":
             final_payload = sub_run.get("final") or {}
-            result_payload = final_payload.get("response") or final_payload.get("payload")
+            result_payload = final_payload.get("response") or final_payload.get(
+                "payload"
+            )
 
         return {
             "status": status,
@@ -319,6 +346,7 @@ def run_loop(
                         group_id=group_id,
                         parent_task_id=task_identifier,
                         attempt_index=attempt_idx,
+                        execution_log_policy=cfg.execution_log_policy,
                     )
                     attempt_entry: Dict[str, Any] = {
                         "attempt": attempt_idx,
@@ -352,8 +380,7 @@ def run_loop(
                         delegation_attempts.append(delegation_outcome["attempt_entry"])
                         if delegation_outcome["status"] != "ok":
                             delegation_error = (
-                                delegation_outcome["error"]
-                                or "delegated agent failed"
+                                delegation_outcome["error"] or "delegated agent failed"
                             )
                             break
                         delegation_results.append(delegation_outcome["result_payload"])
@@ -429,6 +456,24 @@ def run_loop(
         }
 
     while step < max_steps:
+        # Check if we are at the second to last step to force a response
+        if max_steps > 1 and step == max_steps - 1:
+            # NOTE: This is a temporary solution that uses the `system_params` to get network config.
+            # This will be improved in a future refactor.
+            cfg = get_cfg(current_agent)
+            if cfg.system_params.get("network") and cfg.system_params["network"].get("additional_data"):
+                additional_data = cfg.system_params["network"]["additional_data"]
+                force_respond = additional_data.get("force_respond")
+                force_respond_agent = additional_data.get("force_respond_agent")
+
+                if force_respond and force_respond_agent:
+                    exec_log.append_system_message(
+                        "***MAX LOOP ITERATIONS HAS BEEN REACHED. YOU HAVE BEEN CALLED TO GENERATE A RESPONSE. "
+                        'ONLY "RESPOND" ACTION WILL BE ACCEPTED. PLEASE RESPOND AS BEST YOU CAN GIVEN THE CURRENT '
+                        "SITUATION, ALIGNED WITH YOUR OBJECTIVES AND INSTRUCTIONS.***"
+                    )
+                    current_agent = force_respond_agent
+
         cfg = get_cfg(current_agent)
         exec_log.start_agent_epoch(current_agent)
 
@@ -645,6 +690,7 @@ def run_loop(
                 result=res,
                 action_started_at_ms=action_started_at_ms,
                 action_duration_ms=action_duration_ms,
+                execution_log_policy=cfg.execution_log_policy,
             )
             step_summary.update(
                 {
@@ -704,7 +750,9 @@ def run_loop(
                 out.setdefault("final", {}).setdefault("action_type", "TASK_GROUP")
                 if aggregate_usage:
                     out["llm_usage_totals"] = aggregate_usage
-                out["run_duration_ms"] = int((time.perf_counter() - run_perf_start) * 1000)
+                out["run_duration_ms"] = int(
+                    (time.perf_counter() - run_perf_start) * 1000
+                )
                 return out
         else:
             # Unknown -> bail

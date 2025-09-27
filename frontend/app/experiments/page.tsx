@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import {
@@ -11,6 +12,8 @@ import {
   parseJsonObject,
   parseJsonObjectOptional
 } from "@/components/Config/shared";
+import { TraceHeader } from "@/components/TraceHeader/TraceHeader";
+import { RunPlayback } from "@/components/TraceTimeline/RunPlayback";
 import {
   fetchAgents,
   fetchNetworks,
@@ -21,12 +24,16 @@ import {
 import {
   fetchExperiments,
   fetchExperimentDetail,
+  fetchExperimentRuns,
   startExperiment,
   uploadExperimentFile
 } from "@/lib/api/experiments";
 import type {
   AgentSummary,
   ExperimentDetail,
+  ExperimentQueueItem,
+  ExperimentRunHistoryEntry,
+  ExperimentRunField,
   ExperimentSummary,
   ExperimentUploadResponse,
   NetworkSummary,
@@ -39,11 +46,14 @@ import {
   type SystemParamField,
   type ToolParamGroup
 } from "@/lib/systemParams";
+import { getRunSnapshot } from "@/lib/api/runs";
 
 const DEFAULT_SCHEMA_HINT = {
   required: ["iterations"],
   optional: [
-    "user_message",
+    "objective",
+    "correct_behavior",
+    "input_alias",
     "issue_description",
     "true_solution_description",
     "stopping_conditions",
@@ -74,8 +84,89 @@ function deriveStatus(summary: ExperimentSummary) {
   if (summary.queued > 0) return "Queued";
   if (summary.completed > 0 && summary.failed === 0) return "Completed";
   if (summary.completed > 0 && summary.failed > 0) return "Completed with failures";
-  if (summary.failed > 0 && summary.completed === 0) return "Failed";
+  if (summary.failed > 0 && summary.completed === 0) return "Error - Not Completed";
   return "Pending";
+}
+
+
+type QueueItem = ExperimentQueueItem;
+
+function normalizeString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function findNestedString(source: unknown, key: string): string | null {
+  if (!source || typeof source !== "object") return null;
+  const seen = new Set<object>();
+  const stack: object[] = [source as object];
+
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+
+    for (const [entryKey, entryValue] of Object.entries(current)) {
+      if (entryKey === key) {
+        const normalized = normalizeString(entryValue);
+        if (normalized) return normalized;
+      }
+      if (entryValue && typeof entryValue === "object") {
+        stack.push(entryValue as object);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractVerdict(item: QueueItem): string | null {
+  const direct = normalizeString(item.verdict);
+  if (direct) return direct;
+
+  const result = item.result;
+  if (!result) return null;
+
+  const resultDirect = normalizeString((result as { verdict?: unknown }).verdict);
+  if (resultDirect) return resultDirect;
+
+  return findNestedString(result, "verdict");
+}
+
+function extractAnswer(item: QueueItem): string | null {
+  const directItem = normalizeString(item.answer);
+  if (directItem) return directItem;
+
+  const result = item.result;
+  if (!result) return null;
+
+  const direct = normalizeString((result as { answer?: unknown }).answer);
+  if (direct) return direct;
+
+  const actionDetails = result.action_details as Record<string, any> | undefined;
+  if (actionDetails) {
+    const payload = actionDetails.payload as Record<string, any> | undefined;
+    if (payload) {
+      const responsePayload = payload.response_payload as Record<string, any> | undefined;
+      if (responsePayload) {
+        const answer = normalizeString(responsePayload.answer);
+        if (answer) return answer;
+      }
+    }
+  }
+
+  return findNestedString(result, "answer");
+}
+
+function formatVerdictLabel(value: string): string {
+  const cleaned = value.replace(/_/g, " ").trim();
+  if (!cleaned) return value;
+
+  return cleaned
+    .split(/\s+/)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
 }
 
 
@@ -86,7 +177,7 @@ export default function ExperimentsPage() {
   const [maxSteps, setMaxSteps] = useState<string>("");
   const [sharedSystemParams, setSharedSystemParams] = useState<Record<string, string>>({});
   const [extraSharedParamsText, setExtraSharedParamsText] = useState<string>("");
-  const [manualUserMessage, setManualUserMessage] = useState<string>("start conversation");
+  const [manualRunInput, setManualRunInput] = useState<string>("Can a user have more than one account | Correct solution: A user can only have a maximum of one account");
   const [manualIterations, setManualIterations] = useState<string>("1");
   const [manualCorrectAnswer, setManualCorrectAnswer] = useState<string>("");
   const [manualLabel, setManualLabel] = useState<string>("");
@@ -98,6 +189,7 @@ export default function ExperimentsPage() {
   const [uploadResult, setUploadResult] = useState<ExperimentUploadResponse | null>(null);
   const [formMessage, setFormMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(null);
+  const [runHistoryModal, setRunHistoryModal] = useState<{ experimentId: string; description: string | null } | null>(null);
 
   const {
     data: networks,
@@ -295,7 +387,7 @@ export default function ExperimentsPage() {
         if (manualStoppingConditions.trim()) metadata.stopping_conditions = manualStoppingConditions.trim();
 
         const manualItem = {
-          user_message: manualUserMessage.trim() || "start conversation",
+          run_input: manualRunInput.trim() || "start conversation",
           iterations: parsedIterations,
           correct_answer: manualCorrectAnswer.trim() ? manualCorrectAnswer.trim() : null,
           system_params: manualParams,
@@ -454,11 +546,11 @@ export default function ExperimentsPage() {
                 <span className="rounded-full bg-white/10 px-2 py-1 text-xs text-foreground/70">Used when no file is uploaded</span>
               </div>
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-foreground">User message</label>
+                <label className="block text-sm font-medium text-foreground">Run Input</label>
                 <textarea
                   rows={3}
-                  value={manualUserMessage}
-                  onChange={(event) => setManualUserMessage(event.target.value)}
+                  value={manualRunInput}
+                  onChange={(event) => setManualRunInput(event.target.value)}
                   className="w-full rounded-md border border-white/10 bg-background/60 px-3 py-2 text-sm"
                   placeholder="You are a customer of Dafabet…"
                 />
@@ -652,7 +744,8 @@ export default function ExperimentsPage() {
                     <th className="w-24 pb-2">Status</th>
                     <th className="w-24 pb-2 text-right">Runs</th>
                     <th className="w-32 pb-2 text-right">Completed</th>
-                    <th className="w-32 pb-2 text-right">Failed</th>
+                    <th className="w-32 pb-2 text-right">Error - Not Completed</th>
+                    <th className="w-32 pb-2 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -676,7 +769,22 @@ export default function ExperimentsPage() {
                         <td className="pr-4 py-2 text-xs text-foreground/70">{status}</td>
                         <td className="pr-4 py-2 text-right text-xs text-foreground/70">{summary.total_runs}</td>
                         <td className="pr-4 py-2 text-right text-xs text-emerald-300">{summary.completed}</td>
-                        <td className="py-2 text-right text-xs text-red-300">{summary.failed}</td>
+                        <td className="py-2 pr-4 text-right text-xs text-red-300">{summary.failed}</td>
+                        <td className="py-2 text-right">
+                          <button
+                            type="button"
+                            className="rounded-md border border-white/10 px-2 py-1 text-[11px] uppercase tracking-wide text-foreground/80 hover:border-white/30"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setRunHistoryModal({
+                                experimentId: summary.experiment_id,
+                                description: summary.description || null
+                              });
+                            }}
+                          >
+                            View runs
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -712,6 +820,13 @@ export default function ExperimentsPage() {
           </div>
         </div>
       </div>
+      {runHistoryModal ? (
+        <ExperimentRunsModal
+          experimentId={runHistoryModal.experimentId}
+          experimentDescription={runHistoryModal.description}
+          onClose={() => setRunHistoryModal(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -866,11 +981,97 @@ function NetworkDetailsPanel({
 }
 
 function ExperimentDetailPanel({ detail }: { detail: ExperimentDetail }) {
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const experimentId = detail.experiment.experiment_id;
+  const queueItems = detail.queue?.items ?? [];
+  const hasQueueItems = queueItems.length > 0;
+
+  const verdictSummary = useMemo(() => {
+    if (!hasQueueItems) {
+      return [] as { verdict: string; label: string; count: number }[];
+    }
+
+    const counts: Record<string, number> = {};
+    for (const item of queueItems) {
+      const verdictValue = extractVerdict(item);
+      if (!verdictValue) continue;
+      counts[verdictValue] = (counts[verdictValue] ?? 0) + 1;
+    }
+
+    return Object.entries(counts)
+      .map(([verdict, count]) => ({
+        verdict,
+        label: formatVerdictLabel(verdict),
+        count
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [hasQueueItems, queueItems]);
+
+  const handleExport = useCallback(() => {
+    if (!hasQueueItems) {
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const headers = ["Row", "Iteration", "Status", "Verdict", "Answer", "Trace", "Error"];
+    const toCsvCell = (value: string): string => `"${value.replace(/"/g, '""')}"`;
+
+    const rows = queueItems.map((item) => {
+      const verdictValue = extractVerdict(item) ?? "";
+      const answerValue = extractAnswer(item) ?? "";
+      const traceId = normalizeString(item.result?.trace_id) ?? "";
+      const errorValue = item.error ?? "";
+
+      return [
+        String(item.item_index + 1),
+        String(item.iteration),
+        String(item.status ?? ""),
+        verdictValue,
+        answerValue,
+        traceId,
+        errorValue
+      ];
+    });
+
+    const csvContent = [headers, ...rows]
+      .map((row) => row.map((cell) => toCsvCell(cell)).join(","))
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `experiment-${experimentId}-queue.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [experimentId, hasQueueItems, queueItems]);
+
+  const toggleRow = (id: number) => {
+    setExpandedRow(expandedRow === id ? null : id);
+  };
+
   return (
     <section className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold text-foreground">Experiment {detail.experiment.experiment_id}</h3>
-        <p className="mt-1 text-sm text-foreground/70">{detail.experiment.description || "No description provided."}</p>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">Experiment {detail.experiment.experiment_id}</h3>
+            <p className="mt-1 text-sm text-foreground/70">{detail.experiment.description || "No description provided."}</p>
+          </div>
+          <button
+            type="button"
+            className="inline-flex items-center rounded-md border border-white/10 px-3 py-1 text-xs font-medium text-foreground hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={handleExport}
+            disabled={!hasQueueItems}
+          >
+            Export
+          </button>
+        </div>
         {detail.queue ? (
           <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-foreground/70 sm:grid-cols-3">
             <div>
@@ -886,7 +1087,7 @@ function ExperimentDetailPanel({ detail }: { detail: ExperimentDetail }) {
               <p className="text-emerald-300">{detail.queue.completed ?? 0}</p>
             </div>
             <div>
-              <p className="font-medium text-foreground/80">Failed</p>
+              <p className="font-medium text-foreground/80">Error - Not Completed</p>
               <p className="text-red-300">{detail.queue.failed ?? 0}</p>
             </div>
             <div>
@@ -901,6 +1102,19 @@ function ExperimentDetailPanel({ detail }: { detail: ExperimentDetail }) {
         ) : (
           <p className="mt-3 text-xs text-foreground/60">Queue metrics are unavailable for this experiment.</p>
         )}
+        {verdictSummary.length > 0 ? (
+          <div className="mt-4 rounded-md border border-white/10 bg-background/40 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-foreground/60">Verdict totals</p>
+            <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-foreground/80 sm:grid-cols-3">
+              {verdictSummary.map(({ verdict, label, count }) => (
+                <div key={verdict} className="rounded bg-white/5 p-2">
+                  <p className="text-xs uppercase tracking-wide text-foreground/60">{label}</p>
+                  <p className="text-base font-semibold text-foreground">{count}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div>
@@ -910,39 +1124,73 @@ function ExperimentDetailPanel({ detail }: { detail: ExperimentDetail }) {
         ) : detail.queue.items.length === 0 ? (
           <p className="text-sm text-foreground/60">No queue items recorded.</p>
         ) : (
-          <div className="mt-2 max-h-72 overflow-y-auto rounded-md border border-white/10">
+          <div className="mt-2 max-h-96 overflow-y-auto rounded-md border border-white/10">
             <table className="w-full table-fixed text-left text-xs">
               <thead className="bg-white/5 text-foreground/60">
                 <tr>
                   <th className="w-12 px-3 py-2">Row</th>
                   <th className="w-12 px-3 py-2">Iter</th>
                   <th className="w-24 px-3 py-2">Status</th>
+                  <th className="w-24 px-3 py-2">Verdict</th>
+                  <th className="px-3 py-2">Answer</th>
                   <th className="px-3 py-2">Trace</th>
                   <th className="px-3 py-2">Error</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
                 {detail.queue.items.map((item) => {
-                  const result = item.result ?? {};
-                  const traceId = typeof result?.trace_id === "string" ? (result.trace_id as string) : null;
+                  const verdict = extractVerdict(item);
+                  const answer = extractAnswer(item);
+                  const traceId = normalizeString(item.result?.trace_id);
+                  const isExpanded = expandedRow === item.id;
                   return (
-                    <tr key={item.id} className="text-foreground/80">
-                      <td className="px-3 py-2">{item.item_index + 1}</td>
-                      <td className="px-3 py-2">{item.iteration}</td>
-                      <td className="px-3 py-2 text-foreground/70">{item.status}</td>
-                      <td className="px-3 py-2">
-                        {traceId ? (
-                          <Link href={`/?trace_id=${encodeURIComponent(traceId)}`} className="text-primary underline-offset-2 hover:underline">
-                            {traceId}
-                          </Link>
-                        ) : (
-                          <span className="text-foreground/50">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-red-300">
-                        {item.error ? item.error : <span className="text-foreground/50">—</span>}
-                      </td>
-                    </tr>
+                    <>
+                      <tr key={item.id} className="text-foreground/80 cursor-pointer hover:bg-white/5" onClick={() => toggleRow(item.id)}>
+                        <td className="px-3 py-2">{item.item_index + 1}</td>
+                        <td className="px-3 py-2">{item.iteration}</td>
+                        <td className="px-3 py-2 text-foreground/70">{item.status}</td>
+                        <td className="px-3 py-2">
+                          {verdict ? (
+                            <span
+                              className={clsx("rounded-full px-2 py-0.5 text-xs font-medium", {
+                                "bg-green-500/20 text-green-300": verdict === "pass",
+                                "bg-red-500/20 text-red-300": verdict === "fail",
+                                "bg-yellow-500/20 text-yellow-300": verdict !== "pass" && verdict !== "fail"
+                              })}
+                            >
+                              {verdict}
+                            </span>
+                          ) : (
+                            <span className="text-foreground/50">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-foreground/70 whitespace-pre-wrap break-words">
+                          {answer ? answer : <span className="text-foreground/50">—</span>}
+                        </td>
+                        <td className="px-3 py-2">
+                          {traceId ? (
+                            <Link href={`/runs/${encodeURIComponent(traceId)}`} className="text-primary underline-offset-2 hover:underline">
+                              {traceId.substring(0, 8)}...
+                            </Link>
+                          ) : (
+                            <span className="text-foreground/50">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-red-300">
+                          {item.error ? item.error : <span className="text-foreground/50">—</span>}
+                        </td>
+                      </tr>
+                      {isExpanded && item.evaluation_notes && (
+                        <tr>
+                          <td colSpan={7} className="p-4 bg-background/50">
+                            <div className="rounded-md bg-gray-800 p-3">
+                              <p className="text-sm font-semibold text-foreground/80">Evaluation Notes:</p>
+                              <p className="mt-1 text-xs text-foreground/70 whitespace-pre-wrap">{item.evaluation_notes}</p>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
                   );
                 })}
               </tbody>
@@ -951,5 +1199,421 @@ function ExperimentDetailPanel({ detail }: { detail: ExperimentDetail }) {
         )}
       </div>
     </section>
+  );
+}
+
+function ExperimentRunsModal({
+  experimentId,
+  experimentDescription,
+  onClose
+}: {
+  experimentId: string;
+  experimentDescription: string | null;
+  onClose: () => void;
+}) {
+  const { data, isFetching, error } = useQuery({
+    queryKey: ["experiment-runs", experimentId],
+    queryFn: () => fetchExperimentRuns(experimentId),
+    enabled: Boolean(experimentId),
+    staleTime: 30_000
+  });
+
+  const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+  const [activeTraceId, setActiveTraceId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!data?.fields) {
+      return;
+    }
+    setSelectedColumns((previous) => {
+      if (previous.length) {
+        return previous;
+      }
+      return data.fields.filter((field) => field.default).map((field) => field.key);
+    });
+  }, [data?.fields]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const toggleColumn = useCallback((key: string) => {
+    setSelectedColumns((previous) => {
+      if (previous.includes(key)) {
+        return previous.filter((entry) => entry !== key);
+      }
+      return [...previous, key];
+    });
+  }, []);
+
+  const selectedFields = useMemo(() => {
+    if (!data?.fields) return [] as ExperimentRunField[];
+    const index = new Map(data.fields.map((field) => [field.key, field] as const));
+    return selectedColumns
+      .map((key) => index.get(key))
+      .filter((field): field is ExperimentRunField => Boolean(field));
+  }, [data?.fields, selectedColumns]);
+
+  const runs: ExperimentRunHistoryEntry[] = (data?.runs as ExperimentRunHistoryEntry[]) ?? [];
+
+  const verdictSummary = useMemo(() => {
+    if (!runs.length) {
+      return [] as { verdict: string; label: string; count: number }[];
+    }
+
+    const counts: Record<string, number> = {};
+    for (const run of runs) {
+      const verdictValue = normalizeString(run.verdict);
+      if (!verdictValue) continue;
+      counts[verdictValue] = (counts[verdictValue] ?? 0) + 1;
+    }
+
+    return Object.entries(counts)
+      .map(([verdict, count]) => ({
+        verdict,
+        label: formatVerdictLabel(verdict),
+        count
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [runs]);
+
+  const formatForCsv = (value: unknown): string => {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch (err) {
+      return String(value);
+    }
+  };
+
+  const exportCsv = useCallback(() => {
+    if (!data || !selectedFields.length || !runs.length) {
+      return;
+    }
+    const headers = ["Row", ...selectedFields.map((field) => field.label)];
+    const rows = runs.map((run, index) => {
+      const cells = selectedFields.map((field) => {
+        const value = (run as ExperimentRunHistoryEntry)[field.key];
+        return formatForCsv(value);
+      });
+      return [String(index + 1), ...cells];
+    });
+
+    const csvLines = [headers, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+
+    const blob = new Blob([csvLines], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `experiment-${experimentId}-runs.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [data, experimentId, runs, selectedFields]);
+
+  const renderValue = (fieldKey: string, value: unknown) => {
+    if (fieldKey === "trace_id" && typeof value === "string" && value) {
+      return (
+        <a
+          href="#"
+          className="text-primary underline-offset-2 hover:underline"
+          onClick={(event) => {
+            event.preventDefault();
+            setActiveTraceId(value);
+          }}
+        >
+          {value.substring(0, 8)}...
+        </a>
+      );
+    }
+
+    if (fieldKey === "answer" && typeof value === "string") {
+      return <span className="text-foreground/80 whitespace-pre-wrap">{value}</span>;
+    }
+
+    if (fieldKey === "duration_ms" && typeof value === "number") {
+      return <span className="text-foreground/80">{value.toLocaleString()} ms</span>;
+    }
+
+    if (fieldKey === "item_index" && typeof value === "number") {
+      return <span className="text-foreground/80">{value + 1}</span>;
+    }
+
+    if (fieldKey === "error" && typeof value === "string") {
+      return <span className="text-red-300 whitespace-pre-wrap">{value}</span>;
+    }
+
+    if (value === null || value === undefined || value === "") {
+      return <span className="text-foreground/50">—</span>;
+    }
+
+    if (typeof value === "string") {
+      return <span className="text-foreground/80 whitespace-pre-wrap break-words">{value}</span>;
+    }
+
+    if (typeof value === "number" || typeof value === "boolean") {
+      return <span className="text-foreground/80">{String(value)}</span>;
+    }
+
+    try {
+      const serialized = JSON.stringify(value, null, 2);
+      return (
+        <div className="max-h-40 overflow-auto rounded-md bg-black/40 p-2 text-[11px] text-foreground/70">
+          <pre className="whitespace-pre-wrap break-words">{serialized}</pre>
+        </div>
+      );
+    } catch (err) {
+      return <span className="text-foreground/80">{String(value)}</span>;
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-6"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-6xl overflow-hidden rounded-lg border border-white/10 bg-background/95 backdrop-blur"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-4">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">Run history for {experimentId}</h2>
+            {experimentDescription ? (
+              <p className="text-sm text-foreground/70">{experimentDescription}</p>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="rounded-md border border-white/10 px-3 py-1 text-xs text-foreground/80 hover:border-white/30 disabled:opacity-50"
+              onClick={exportCsv}
+              disabled={!runs.length || !selectedFields.length}
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-white/10 px-3 py-1 text-xs text-foreground/80 hover:border-white/30"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 space-y-4">
+          {error ? (
+            <p className="text-sm text-red-400">Unable to load run history.</p>
+          ) : null}
+          {verdictSummary.length > 0 ? (
+            <div className="rounded-md border border-white/10 bg-background/40 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-foreground/60">Verdict totals</p>
+              <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-foreground/80 sm:grid-cols-3">
+                {verdictSummary.map(({ verdict, label, count }) => (
+                  <div
+                    key={verdict}
+                    className={clsx("rounded p-2", {
+                      "bg-green-500/20": verdict === "pass",
+                      "bg-red-500/20": verdict === "fail",
+                      "bg-yellow-500/20": verdict !== "pass" && verdict !== "fail"
+                    })}
+                  >
+                    <p
+                      className={clsx("text-xs uppercase tracking-wide", {
+                        "text-green-300": verdict === "pass",
+                        "text-red-300": verdict === "fail",
+                        "text-yellow-300": verdict !== "pass" && verdict !== "fail"
+                      })}
+                    >
+                      {label}
+                    </p>
+                    <p
+                      className={clsx("text-base font-semibold", {
+                        "text-green-100": verdict === "pass",
+                        "text-red-100": verdict === "fail",
+                        "text-yellow-100": verdict !== "pass" && verdict !== "fail"
+                      })}
+                    >
+                      {count}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-foreground/60">Columns</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(data?.fields ?? []).map((field) => {
+                const selected = selectedColumns.includes(field.key);
+                return (
+                  <label
+                    key={field.key}
+                    className={clsx(
+                      "flex items-center gap-2 rounded border px-2 py-1 text-xs",
+                      selected
+                        ? "border-primary/60 bg-primary/20 text-primary"
+                        : "border-white/10 bg-background/60 text-foreground/70"
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3 accent-primary"
+                      checked={selected}
+                      onChange={() => toggleColumn(field.key)}
+                    />
+                    {field.label}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          {isFetching ? (
+            <p className="text-sm text-foreground/60">Loading run entries…</p>
+          ) : null}
+
+          {!isFetching && !error && runs.length === 0 ? (
+            <p className="text-sm text-foreground/60">No runs recorded for this experiment.</p>
+          ) : null}
+
+          {runs.length > 0 && selectedFields.length > 0 ? (
+            <div className="max-h-[60vh] overflow-auto rounded-md border border-white/10">
+              <table className="w-full table-fixed text-left text-xs">
+                <thead className="bg-white/5 text-foreground/60">
+                  <tr>
+                    <th className="w-12 px-3 py-2">Row</th>
+                    {selectedFields.map((field) => (
+                      <th key={field.key} className="px-3 py-2">
+                        {field.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5 text-foreground/80">
+                  {runs.map((run, index) => (
+                    <tr key={`${run.run_id}-${index}`} className="align-top">
+                      <td className="px-3 py-2">{index + 1}</td>
+                      {selectedFields.map((field) => {
+                        const value = (run as ExperimentRunHistoryEntry)[field.key];
+                        return (
+                          <td key={field.key} className="px-3 py-2">
+                            {renderValue(field.key, value)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {activeTraceId ? (
+        <RunTraceModal
+          traceId={activeTraceId}
+          onClose={() => setActiveTraceId(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function RunTraceModal({ traceId, onClose }: { traceId: string; onClose: () => void }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["run-snapshot", traceId],
+    queryFn: () => getRunSnapshot(traceId),
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const handleBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6" onClick={handleBackdropClick}>
+      <div
+        className="relative flex h-[90vh] w-[95vw] max-w-6xl flex-col overflow-hidden rounded-lg border border-white/10 bg-background/98 backdrop-blur"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">Trace {traceId}</h3>
+            <p className="text-xs text-foreground/60">Interactive playback</p>
+          </div>
+          <button
+            type="button"
+            className="rounded-md border border-white/10 px-3 py-1 text-xs text-foreground/80 hover:border-white/30"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-foreground/60">
+            Loading trace…
+          </div>
+        ) : error ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-red-400">
+            Unable to load trace.
+          </div>
+        ) : data ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <TraceHeader traceId={traceId} graphVersionId={(data.graphVersionId ?? data.metadata?.graph_version_key ?? undefined) as string | undefined} />
+            <RunPlayback
+              traceId={traceId}
+              initialSteps={data.steps}
+              graphVersionId={(() => {
+                const graphId = data.graphVersionId ?? data.metadata?.graph_version_key ?? null;
+                return graphId != null ? String(graphId) : undefined;
+              })()}
+              networkName={(() => {
+                const name = data.metadata?.network_name;
+                if (name && name.trim().length) return name;
+                const id = data.metadata?.network_id;
+                return id != null ? String(id) : undefined;
+              })()}
+              variant="modal"
+            />
+          </div>
+        ) : (
+          <div className="flex flex-1 items-center justify-center text-sm text-foreground/60">
+            Trace not found.
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

@@ -76,3 +76,6 @@ local_tests/
 *.db
 data/
 .model_cache
+# Allow library code inside src/arion_agents/logs
+!src/arion_agents/logs/
+!src/arion_agents/logs/**/*.py
